@@ -29,26 +29,52 @@ Broadcasting needs camera and microphone access. Add these keys to your app's **
 <string>We use the microphone so others can hear your broadcast.</string>
 ```
 
-## 3. Installation
+## 3. Install (from GitHub)
 
-### Swift Package Manager
+Mebius is distributed **directly from its GitHub repository** — there is no public
+package-registry or CocoaPods-trunk entry required. The repository is **private**,
+so installation authenticates over **SSH**: make sure the developer's machine has a
+GitHub SSH key set up and added to an account with access to
+`russimobiledroidx/mebius-ios-sdk` (verify with `ssh -T git@github.com`). All
+commands below use the SSH git URL, which is what resolves a private repo.
 
-In Xcode: **File ▸ Add Package Dependencies…**, then enter the repository URL:
+> Releases are tagged `v0.1.0` (see *Tag form* note at the end of this section).
 
+### Swift Package Manager — via Xcode
+
+1. **File ▸ Add Package Dependencies…**
+2. In the search/URL field, paste the SSH URL:
+   ```
+   git@github.com:russimobiledroidx/mebius-ios-sdk.git
+   ```
+3. Set the dependency rule to **Up to Next Major Version** starting at `0.1.0`
+   (or pick the exact tag `v0.1.0`).
+4. Add the **`Mebius`** library product to your app target.
+
+The SSH URL works for private repos as long as Xcode/SPM can use the developer's
+GitHub SSH key.
+
+### Swift Package Manager — via `Package.swift`
+
+```swift
+.package(url: "git@github.com:russimobiledroidx/mebius-ios-sdk.git", from: "0.1.0")
 ```
-https://github.com/russimobiledroidx/mebius-ios-sdk.git
+
+…and add `"Mebius"` to the dependencies of the target that uses it:
+
+```swift
+.target(
+    name: "YourApp",
+    dependencies: ["Mebius"]
+)
 ```
-
-Choose the `Mebius` library and add it to your target.
-
-> The SPM build ships the full public API and the scale playback path. The real-time (broadcast and low-latency playback) transport relies on a binary that is distributed via CocoaPods; for those features, install via CocoaPods.
 
 ### CocoaPods
 
-Add to your `Podfile`:
+Point the pod straight at the private git repo and the release tag in your `Podfile`:
 
 ```ruby
-pod 'Mebius'
+pod 'Mebius', :git => 'git@github.com:russimobiledroidx/mebius-ios-sdk.git', :tag => 'v0.1.0'
 ```
 
 Then run:
@@ -57,12 +83,36 @@ Then run:
 pod install
 ```
 
-**Validating the podspec** (CocoaPods must be installed):
+The `:git` source above overrides the URL declared in the podspec at consume time,
+so it always resolves the private repo over SSH.
 
-```sh
-pod lib lint Mebius.podspec      # local lint
-pod spec lint Mebius.podspec     # remote lint (needs a pushed tag)
-```
+> **The SPM build ships the full public API and the scale playback path.** The
+> real-time (broadcast and low-latency playback) transport sits behind a Swift
+> protocol and ships as a documented placeholder in the SPM build; the concrete
+> transport relies on a libwebrtc binary distributed via CocoaPods. For those
+> features, install via CocoaPods (see the `MEBIUS_RTC` flag in `Mebius.podspec`).
+
+### Tag form (SPM vs CocoaPods)
+
+Releases are published as the annotated git tag **`v0.1.0`**. SPM matches a
+SemVer requirement such as `from: "0.1.0"` against tags **with or without** a
+leading `v`, so the `v0.1.0` tag resolves correctly. CocoaPods uses the exact
+`:tag` string you write in the `Podfile` (`v0.1.0` above). This release uses the
+**`v0.1.0`** tag.
+
+---
+
+### Secondary: registry / trunk distribution
+
+> These paths are **not** used today; the GitHub install above is the primary
+> (and only required) path. If Mebius is ever published to CocoaPods trunk or an
+> SPM registry, you would instead use `pod 'Mebius'` (no `:git`) and validate the
+> podspec with:
+>
+> ```sh
+> pod lib lint Mebius.podspec      # local lint
+> pod spec lint Mebius.podspec     # remote lint (needs a pushed tag)
+> ```
 
 ## 4. Quick Start
 
