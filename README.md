@@ -94,20 +94,23 @@ so it always resolves the private repo over SSH.
 
 ### Tag form (SPM vs CocoaPods)
 
-Releases are published as the annotated git tag **`v0.1.0`**. SPM matches a
-SemVer requirement such as `from: "0.1.0"` against tags **with or without** a
-leading `v`, so the `v0.1.0` tag resolves correctly. CocoaPods uses the exact
-`:tag` string you write in the `Podfile` (`v0.1.0` above). This release uses the
-**`v0.1.0`** tag.
+Releases are published as the annotated git tag **`v0.2.1`**. SPM matches a SemVer
+requirement such as `from: "0.2.1"` against tags **with or without** a leading `v`,
+so the tag resolves correctly.
+
+CocoaPods does not guess: it clones the exact string in `:tag`. The podspec used
+`s.version.to_s`, which asked for a tag named `0.2.0` while the repo tags `v0.2.0` —
+`pod trunk push` failed with *"Remote branch 0.2.0 not found in upstream origin"*. It
+now reads `"v#{s.version}"`, so the two can no longer drift.
 
 ---
 
 ### Secondary: registry / trunk distribution
 
-> These paths are **not** used today; the GitHub install above is the primary
-> (and only required) path. If Mebius is ever published to CocoaPods trunk or an
-> SPM registry, you would instead use `pod 'Mebius'` (no `:git`) and validate the
-> podspec with:
+> CocoaPods trunk is now a published path — `pod 'Mebius'` with no `:git` works, and
+> it is the only distribution that carries the real-time transport (SwiftPM does not
+> set `MEBIUS_RTC`, so publish and sub-second playback fall back to the stub there).
+> Validate a podspec before pushing with:
 >
 > ```sh
 > pod lib lint Mebius.podspec      # local lint
