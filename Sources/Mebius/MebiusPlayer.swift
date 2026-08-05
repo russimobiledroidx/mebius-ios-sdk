@@ -43,15 +43,36 @@ public final class MebiusPlayer {
     private let gateway: URL
     private let token: String
 
-    // Exactly one of these is active depending on the selected mode.
+    // At most one of these is active: the route currently being attempted.
     private var subscribeTransport: SubscribeTransport?
     private var scalePlayback: ScalePlayback?
 
-    init(client: MebiusClient, gateway: URL, token: String, mode: MebiusPlayerMode) {
+    // Routes to attempt, in the gateway's preferred order. A LIST rather than one
+    // transport is the point: a route that opens successfully is not yet a route
+    // that plays, so the player has to be able to move on.
+    private let routes: [PlaybackRoute]
+    private var routeIndex = 0
+    private var routeAccepted = false
+    private var watchdog: DispatchWorkItem?
+
+    // The render target for the route walk. UIKit-gated because the view type is:
+    // the package builds on macOS for tooling, where there is nothing to render into.
+    #if canImport(UIKit)
+    private var pendingView: MebiusVideoView?
+    #endif
+
+    init(
+        client: MebiusClient,
+        gateway: URL,
+        token: String,
+        mode: MebiusPlayerMode,
+        deliveries: [MebiusDelivery] = []
+    ) {
         self.client = client
         self.gateway = gateway
         self.token = token
         self.mode = mode
+        self.routes = buildPlaybackRoutes(mode: mode, deliveries: deliveries)
     }
 
     #if canImport(UIKit)
@@ -70,13 +91,27 @@ public final class MebiusPlayer {
 
         self.streamId = streamId
         view.detach()
+        self.pendingView = view
+        routeIndex = 0
+        routeAccepted = false
+        startCurrentRoute()
+    }
+
+    /// Opens the route at `routeIndex`, then arms the watchdog.
+    private func startCurrentRoute() {
+        guard
+            let client,
+            let view = pendingView,
+            let streamId,
+            routeIndex < routes.count
+        else { return }
+
+        let route = routes[routeIndex]
         let endpoints = client.gatewayEndpoints
 
-        switch mode {
-        case .lowLatency:
-            // Real-time low-latency delivery (WHEP) via the gateway.
+        if route.isRealtime {
             let config = SubscribeConfig(
-                gateway: endpoints.lowLatencySubscribeURL(streamId: streamId),
+                gateway: endpoints.lowLatencySubscribeURL(streamId: streamId, token: client.currentToken),
                 token: client.currentToken,
                 streamId: streamId
             )
@@ -86,19 +121,98 @@ public final class MebiusPlayer {
             transport.attachRenderer(to: view)
             self.subscribeTransport = transport
             transport.start()
-
-        case .scale:
-            // Scale delivery (adaptive HLS) via AVPlayer. Auto-selected; the
-            // mechanism is not exposed to the developer.
-            let url = endpoints.scalePlaylistURL(streamId: streamId)
+        } else {
+            // A gateway-offered route when there is one, the origin playlist otherwise.
+            // deliveryURL returns nil for a path it cannot resolve safely; skipping
+            // straight to the next route is the right answer there, because fetching it
+            // would send the viewer's token to a host Mebius did not choose.
+            let url: URL?
+            if let path = route.deliveryPath {
+                url = endpoints.deliveryURL(path: path, token: client.currentToken)
+            } else {
+                url = endpoints.originPlaylistURL(streamId: streamId, token: client.currentToken)
+            }
+            guard let url else {
+                advance(after: .connectionFailed)
+                return
+            }
             let playback = ScalePlayback(url: url, token: client.currentToken)
             playback.delegate = self
             self.scalePlayback = playback
             playback.start(in: view)
             playback.setVolume(volume)
         }
+
+        armWatchdog()
     }
+
     #endif
+
+    /// Gives the current route ``mebiusFirstFrameTimeout`` to report playback.
+    ///
+    /// This is the whole reason a route list exists. A route that connects and sends
+    /// nothing produces no error at all, so without a timer playback sits on a black
+    /// frame indefinitely — which is what happened before this existed.
+    private func armWatchdog() {
+        cancelWatchdog()
+        let task = DispatchWorkItem { [weak self] in
+            guard let self, !self.routeAccepted else { return }
+            self.advance(after: .connectionFailed)
+        }
+        watchdog = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + mebiusFirstFrameTimeout, execute: task)
+    }
+
+    private func cancelWatchdog() {
+        watchdog?.cancel()
+        watchdog = nil
+    }
+
+    /// Tears the dead route down and tries the next, or reports `error`.
+    private func advance(after error: MebiusError) {
+        cancelWatchdog()
+        // Release before opening the next route. An AVPlayer or peer connection left
+        // attached to the same view leaks for the session and can keep rendering over
+        // the route that replaces it.
+        subscribeTransport?.stop()
+        scalePlayback?.stop()
+        subscribeTransport = nil
+        scalePlayback = nil
+
+        routeIndex += 1
+        guard routeIndex < routes.count else {
+            isPlaying = false
+            #if canImport(UIKit)
+            pendingView = nil
+            #endif
+            delegate?.mebiusPlayer(self, didFailWithError: error)
+            onError?(error)
+            return
+        }
+        #if canImport(UIKit)
+        startCurrentRoute()
+        #endif
+    }
+
+    /// Records that a route actually delivered, and forwards the event.
+    private func acceptRoute() {
+        routeAccepted = true
+        cancelWatchdog()
+        isPlaying = true
+        delegate?.mebiusPlayerDidStartPlaying(self)
+        onPlaying?()
+    }
+
+    /// Routes a failure: a real failure once video has arrived, otherwise a skip.
+    private func handleFailure(_ error: MebiusError) {
+        if routeAccepted {
+            isPlaying = false
+            delegate?.mebiusPlayer(self, didFailWithError: error)
+            onError?(error)
+        } else {
+            advance(after: error)
+        }
+    }
 
     /// Stops playback and releases resources.
     public func stop() {
@@ -132,9 +246,8 @@ public final class MebiusPlayer {
 
 extension MebiusPlayer: SubscribeTransportDelegate {
     func subscribeTransportDidStartPlaying(_ transport: SubscribeTransport) {
-        isPlaying = true
-        delegate?.mebiusPlayerDidStartPlaying(self)
-        onPlaying?()
+        guard transport === subscribeTransport else { return }
+        acceptRoute()
     }
 
     func subscribeTransportDidBuffer(_ transport: SubscribeTransport) {
@@ -154,17 +267,16 @@ extension MebiusPlayer: SubscribeTransportDelegate {
     }
 
     func subscribeTransport(_ transport: SubscribeTransport, didFail error: MebiusError) {
-        isPlaying = false
-        delegate?.mebiusPlayer(self, didFailWithError: error)
-        onError?(error)
+        // A route already abandoned must not fail the one now playing.
+        guard transport === subscribeTransport else { return }
+        handleFailure(error)
     }
 }
 
 extension MebiusPlayer: ScalePlaybackDelegate {
     func scalePlaybackDidStartPlaying(_ playback: ScalePlayback) {
-        isPlaying = true
-        delegate?.mebiusPlayerDidStartPlaying(self)
-        onPlaying?()
+        guard playback === scalePlayback else { return }
+        acceptRoute()
     }
 
     func scalePlaybackDidBuffer(_ playback: ScalePlayback) {

@@ -86,11 +86,11 @@ pod install
 The `:git` source above overrides the URL declared in the podspec at consume time,
 so it always resolves the private repo over SSH.
 
-> **The SPM build ships the full public API and the scale playback path.** The
-> real-time (broadcast and low-latency playback) transport sits behind a Swift
+> **The SPM build ships the full public API and the scaled playback path.** The
+> real-time transport (broadcast and sub-second playback) sits behind a Swift
 > protocol and ships as a documented placeholder in the SPM build; the concrete
-> transport relies on a libwebrtc binary distributed via CocoaPods. For those
-> features, install via CocoaPods (see the `MEBIUS_RTC` flag in `Mebius.podspec`).
+> transport needs a binary distributed via CocoaPods. For those features, install
+> via CocoaPods (see the `MEBIUS_RTC` flag in `Mebius.podspec`).
 
 ### Tag form (SPM vs CocoaPods)
 
@@ -128,7 +128,14 @@ import Mebius
 let mebius = Mebius(appId: "your-app-id",
                     gateway: URL(string: "https://gateway.mebius.io")!)
 
-let client = mebius.connect(token: tokenFromYourBackend)
+// Your backend returns `token` AND `deliveries` from one call. Pass both.
+// Dropping `deliveries` still plays, but serves every viewer from Mebius origin
+// instead of the nearest edge — on mobile that is billed per viewer.
+let body = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+let client = mebius.connect(
+    token: body?["token"] as? String ?? "",
+    deliveries: MebiusDelivery.list(fromTokenResponse: body)
+)
 
 client.onConnected = { print("Connected") }
 client.onError = { error in
@@ -160,14 +167,34 @@ broadcaster.stop()
 ```swift
 let videoView = MebiusVideoView()           // add to your view hierarchy
 
-// .lowLatency for real-time, .scale for large audiences
-let player = client.createPlayer(mode: .lowLatency)
+let player = client.createPlayer()   // mode defaults to .auto
 
 player.onPlaying = { print("Playing") }
 player.onBuffering = { print("Buffering") }
 player.onEnded = { print("Ended") }
 
 player.play(streamId: "my-stream", view: videoView)
+```
+
+### Playback modes
+
+| Mode | When to use |
+| --- | --- |
+| `.auto` (default) | Recommended. Mebius picks per viewer and re-picks if a route stops delivering video. |
+| `.lowLatency` | Two-way interaction (co-broadcast). Costs one per-viewer session, so not for a plain audience. |
+| `.scale` | Largest audiences and unstable networks. |
+
+Whatever the mode, playback walks an ordered route list and gives each route
+**8 seconds** to deliver video before moving on. A route that opens is not yet a
+route that plays: an edge with no ingest answers 200 with an empty stream, and a
+real-time connection reports itself connected while zero frames arrive. Both used
+to leave the viewer on a black frame with no error to react to.
+
+### Watching the other side of a co-broadcast
+
+```swift
+let monitor = client.createMonitor()
+monitor.play(streamId: opponentStreamId, view: videoView)
 player.setVolume(0.5)                        // 0...1
 player.stop()
 ```
@@ -195,7 +222,7 @@ struct WatchScreen: View {
     @State private var player: MebiusPlayer?
     var body: some View {
         MebiusVideoViewRepresentable { view in
-            let player = client.createPlayer(mode: .lowLatency)
+            let player = client.createPlayer()
             self.player = player
             client.onConnected = { player.play(streamId: "my-stream", view: view) }
         }
@@ -240,9 +267,11 @@ Full UIKit examples are in [`Examples/UIKitExample`](Examples/UIKitExample).
 | Type | Member | Signature |
 |------|--------|-----------|
 | `Mebius` | init | `init(appId: String, gateway: URL)` |
-| `Mebius` | connect | `func connect(token: String) -> MebiusClient` |
+| `Mebius` | connect | `func connect(token: String, deliveries: [MebiusDelivery] = []) -> MebiusClient` |
 | `MebiusClient` | createBroadcaster | `func createBroadcaster(video: Bool = true, audio: Bool = true) -> MebiusBroadcaster` |
-| `MebiusClient` | createPlayer | `func createPlayer(mode: MebiusPlayerMode) -> MebiusPlayer` |
+| `MebiusClient` | createPlayer | `func createPlayer(mode: MebiusPlayerMode = .auto) -> MebiusPlayer` |
+| `MebiusClient` | createMonitor | `func createMonitor() -> MebiusPlayer` |
+| `MebiusDelivery` | list | `static func list(fromTokenResponse: [String: Any]?) -> [MebiusDelivery]` |
 | `MebiusClient` | updateToken | `func updateToken(_ token: String)` |
 | `MebiusClient` | disconnect | `func disconnect()` |
 | `MebiusClient` | events | `onConnected`, `onDisconnected`, `onError` closures + `delegate` |
@@ -258,7 +287,7 @@ Full UIKit examples are in [`Examples/UIKitExample`](Examples/UIKitExample).
 | `MebiusPlayer` | setVolume | `func setVolume(_ volume: Float)` (0...1) |
 | `MebiusPlayer` | events | `onPlaying`, `onBuffering`, `onEnded`, `onStats`, `onError` closures + `delegate` |
 | `MebiusVideoView` | view | `UIView` subclass for preview/playback |
-| `MebiusPlayerMode` | enum | `.lowLatency`, `.scale` |
+| `MebiusPlayerMode` | enum | `.auto` (default), `.lowLatency`, `.scale` |
 
 ### Delegate protocols
 
@@ -334,7 +363,7 @@ Mebius follows [Semantic Versioning](https://semver.org). The public API is stab
 
 #### 0.1.0
 - Initial release: `Mebius`, `MebiusClient`, `MebiusBroadcaster`, `MebiusPlayer`, `MebiusVideoView`.
-- Broadcast, low-latency and scale playback, delegate + closure events, `MebiusError`.
+- Broadcast, sub-second and scaled playback, delegate + closure events, `MebiusError`.
 
 ## 10. License
 

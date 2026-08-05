@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'Mebius'
-  s.version          = '0.1.0'
+  s.version          = '0.2.0'
   s.summary          = 'Native iOS SDK for Mebius live video — broadcast and watch.'
   s.description      = <<-DESC
     Mebius is a native Swift SDK for live video on iOS. Broadcast from the
@@ -22,13 +22,13 @@ Pod::Spec.new do |s|
   # depends on the libwebrtc binary. The MEBIUS_RTC compilation condition turns
   # on the concrete transport code (otherwise the documented stub is used).
   #
-  # Uncomment the dependency and the compiler flag below once the libwebrtc pod
-  # of your choice is pinned (libwebrtc binaries are distributed via CocoaPods,
-  # not Swift Package Manager). Example pins, depending on your provider:
-  #   s.dependency 'GoogleWebRTC'        # legacy
-  #   s.dependency 'WebRTC-lib'          # community libwebrtc binary
-  #
-  # s.pod_target_xcconfig = {
-  #   'OTHER_SWIFT_FLAGS' => '-D MEBIUS_RTC'
-  # }
+  # libwebrtc binaries ship via CocoaPods (not SPM). WebRTC-SDK is the maintained
+  # community binary that vends `import WebRTC`. Repin if your provider differs:
+  #   s.dependency 'GoogleWebRTC'        # legacy / unmaintained
+  #   s.dependency 'WebRTC-lib'          # alternate community binary
+  s.dependency 'WebRTC-SDK', '~> 125.6422'
+
+  s.pod_target_xcconfig = {
+    'OTHER_SWIFT_FLAGS' => '-D MEBIUS_RTC'
+  }
 end

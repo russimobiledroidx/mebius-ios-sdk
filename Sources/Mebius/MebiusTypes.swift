@@ -6,7 +6,14 @@ import Foundation
 /// mechanism for each mode is selected automatically and is not exposed.
 public enum MebiusPlayerMode: String, Equatable, Sendable {
 
+    /// Let Mebius choose per viewer, and move to another route by itself if the
+    /// chosen one stops delivering video. The recommended default.
+    case auto = "auto"
+
     /// Optimized for the lowest possible latency (real-time, sub-second).
+    /// Costs one per-viewer session on Mebius, so it is not the right choice for a
+    /// plain audience — use ``auto`` for that, or `createMonitor()` for the other
+    /// side of a co-broadcast.
     /// Best for interactive use cases such as auctions, calls, or live Q&A.
     case lowLatency = "low-latency"
 
