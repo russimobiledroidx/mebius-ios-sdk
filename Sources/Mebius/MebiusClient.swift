@@ -2,7 +2,7 @@ import Foundation
 
 /// A connected (or connecting) Mebius session.
 ///
-/// Obtain a client from ``Mebius/connect(token:)``. Use it to create
+/// Obtain a client from ``Mebius/connect(token:deliveries:)``. Use it to create
 /// broadcasters and players. Observe connection events via ``delegate`` or the
 /// closure properties.
 ///
@@ -39,9 +39,11 @@ public final class MebiusClient {
     public var onError: ((MebiusError) -> Void)?
 
     private var token: String
+    private let deliveries: [MebiusDelivery]
     private let endpoints: GatewayEndpoints
 
-    init(appId: String, gateway: URL, token: String) {
+    init(appId: String, gateway: URL, token: String, deliveries: [MebiusDelivery] = []) {
+        self.deliveries = deliveries
         self.appId = appId
         self.gateway = gateway
         self.token = token
@@ -113,17 +115,31 @@ public final class MebiusClient {
 
     /// Creates a player for watching a stream through this client.
     ///
-    /// - Parameter mode: The playback mode. Use ``MebiusPlayerMode/lowLatency``
-    ///   for real-time interactivity or ``MebiusPlayerMode/scale`` for large
-    ///   audiences.
+    /// - Parameter mode: The playback mode. Defaults to ``MebiusPlayerMode/auto``,
+    ///   which lets Mebius choose per viewer and re-choose if a route stops
+    ///   delivering video. The previous default was real-time, which opened one
+    ///   per-viewer session for every member of an audience that did not need it.
     /// - Returns: A configured ``MebiusPlayer``.
-    public func createPlayer(mode: MebiusPlayerMode) -> MebiusPlayer {
+    public func createPlayer(mode: MebiusPlayerMode = .auto) -> MebiusPlayer {
         MebiusPlayer(
             client: self,
             gateway: gateway,
             token: token,
-            mode: mode
+            mode: mode,
+            deliveries: deliveries
         )
+    }
+
+    /// Creates a player for a stream you are interacting WITH — the other side of a
+    /// co-broadcast — where a second of delay makes the interaction feel broken.
+    ///
+    /// Same API as a player; only the delay budget differs. It starts on the
+    /// real-time route and falls back by itself if that route sends no video, which
+    /// is the part apps used to hand-roll and get wrong in front of a live audience.
+    ///
+    /// - Returns: A configured ``MebiusPlayer``.
+    public func createMonitor() -> MebiusPlayer {
+        createPlayer(mode: .lowLatency)
     }
 
     // Token accessor used by broadcasters/players created after a refresh.

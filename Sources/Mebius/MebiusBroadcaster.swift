@@ -81,9 +81,10 @@ public final class MebiusBroadcaster {
         self.streamId = streamId
 
         let endpoints = client.gatewayEndpoints
-        // Internally this opens a real-time publish session (WHIP) to the gateway.
+        // Internally this opens a real-time publish session to the gateway. Which
+        // transport carries it lives in Internal/ and is not part of this surface.
         let config = PublishConfig(
-            gateway: endpoints.publishURL(streamId: streamId),
+            gateway: endpoints.publishURL(streamId: streamId, token: client.currentToken),
             token: client.currentToken,
             streamId: streamId,
             video: video,

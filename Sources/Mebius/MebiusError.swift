@@ -6,7 +6,7 @@ import Foundation
 /// infrastructure details to the developer.
 public enum MebiusError: Error, Equatable {
 
-    /// The authentication token supplied to ``Mebius/connect(token:)`` has
+    /// The authentication token supplied to ``Mebius/connect(token:deliveries:)`` has
     /// expired. The application is expected to obtain a fresh token from its
     /// backend and reconnect. Maps to the wire code `TOKEN_EXPIRED`.
     case tokenExpired
@@ -67,7 +67,7 @@ extension MebiusError: LocalizedError {
         case .connectionFailed:
             return "Mebius connection failed. Could not reach the Mebius gateway."
         case .notConnected:
-            return "Mebius client is not connected. Call connect(token:) before this operation."
+            return "Mebius client is not connected. Call connect(...) before this operation."
         case .streamNotFound:
             return "Mebius stream not found. The requested stream is unavailable."
         case .unknown(let message):

@@ -5,6 +5,10 @@ import Mebius
 final class WatchViewController: UIViewController {
 
     private let token: String
+    /// The `deliveries` list your backend returned alongside the token. Forward it
+    /// untouched: without it every viewer is served from Mebius origin instead of the
+    /// nearest edge, which on mobile is billed per viewer.
+    private let deliveries: [MebiusDelivery]
     private let gateway = URL(string: "https://gateway.mebius.io")!
     private let streamId = "demo-stream"
 
@@ -14,8 +18,9 @@ final class WatchViewController: UIViewController {
     private var client: MebiusClient?
     private var player: MebiusPlayer?
 
-    init(token: String) {
+    init(token: String, deliveries: [MebiusDelivery] = []) {
         self.token = token
+        self.deliveries = deliveries
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -47,11 +52,11 @@ final class WatchViewController: UIViewController {
         ])
 
         let mebius = Mebius(appId: "your-app-id", gateway: gateway)
-        let client = mebius.connect(token: token)
+        let client = mebius.connect(token: token, deliveries: deliveries)
         self.client = client
 
         // Choose .scale for large audiences, .lowLatency for real-time.
-        let player = client.createPlayer(mode: .scale)
+        let player = client.createPlayer()   // .auto
         player.delegate = self
         self.player = player
 

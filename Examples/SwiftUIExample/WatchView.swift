@@ -4,6 +4,10 @@ import Mebius
 /// SwiftUI screen that watches a Mebius stream.
 struct WatchView: View {
     let token: String
+    /// The `deliveries` list your backend returned alongside the token. Forward it
+    /// untouched: without it every viewer is served from Mebius origin instead of
+    /// the nearest edge, which on mobile is billed per viewer.
+    var deliveries: [MebiusDelivery] = []
     let gateway = URL(string: "https://gateway.mebius.io")!
     let streamId = "demo-stream"
 
@@ -16,11 +20,14 @@ struct WatchView: View {
         VStack(spacing: 0) {
             MebiusVideoViewRepresentable { view in
                 let mebius = Mebius(appId: "your-app-id", gateway: gateway)
-                let client = mebius.connect(token: token)
+                let client = mebius.connect(token: token, deliveries: deliveries)
                 self.client = client
 
-                // Use .lowLatency for real-time, .scale for large audiences.
-                let player = client.createPlayer(mode: .lowLatency)
+                // .auto is the default: Mebius picks per viewer and moves to another
+                // route by itself if the one it picked delivers no video. Use
+                // client.createMonitor() instead when watching the other side of a
+                // co-broadcast, where a second of delay breaks the interaction.
+                let player = client.createPlayer()
                 player.onPlaying = { status = "Playing" }
                 player.onBuffering = { status = "Buffering…" }
                 player.onEnded = { status = "Ended" }
