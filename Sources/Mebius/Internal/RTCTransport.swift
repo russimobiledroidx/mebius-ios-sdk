@@ -33,6 +33,22 @@ private enum RTCFactory {
     static let shared: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         let encoder = RTCDefaultVideoEncoderFactory()
+        // Publish H264, whatever the encoder factory's default order happens to
+        // be on this libwebrtc build.
+        //
+        // A VP8 offer is a dead end for every viewer who is not on the
+        // real-time route: the gateway's segment-based deliveries cannot carry
+        // VP8, so they drop the video track and the broadcast arrives as audio
+        // only — with a healthy preview, bitrate and connection state on the
+        // device the whole time. That is exactly what happened on the web SDK,
+        // where Chrome does default to VP8.
+        //
+        // preferredCodec only moves H264 to the front of supportedCodecs; the
+        // rest stay available, so a device that cannot encode H264 still
+        // negotiates something.
+        if let h264 = encoder.supportedCodecs().first(where: { $0.name == kRTCVideoCodecH264Name }) {
+            encoder.preferredCodec = h264
+        }
         let decoder = RTCDefaultVideoDecoderFactory()
         return RTCPeerConnectionFactory(encoderFactory: encoder, decoderFactory: decoder)
     }()
