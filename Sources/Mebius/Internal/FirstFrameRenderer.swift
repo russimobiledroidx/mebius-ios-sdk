@@ -22,6 +22,12 @@ final class FirstFrameRenderer: NSObject, RTCVideoRenderer {
         super.init()
     }
 
+    /// Stops reporting, permanently. Called on teardown before removal, because
+    /// removal waits for a frame already inside `renderFrame`.
+    func cancel() {
+        latch.cancel()
+    }
+
     /// Size changes carry no frame, so they are not evidence of playback.
     func setSize(_ size: CGSize) {}
 

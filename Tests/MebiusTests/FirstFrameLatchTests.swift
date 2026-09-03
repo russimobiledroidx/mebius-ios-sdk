@@ -10,13 +10,29 @@ import XCTest
 /// true if none ever does.
 final class FirstFrameLatchTests: XCTestCase {
 
-    func testStaysSilentUntilAFrameArrives() {
+    func testCancelStopsAFrameInFlightFromReporting() {
+        // Removal alone does not close this window: removeRenderer: blocks on
+        // libwebrtc's worker thread, so a frame already inside renderFrame makes
+        // removal wait for it — the latch would fire and report playback after
+        // teardown had returned.
         var fired = 0
-        _ = FirstFrameLatch { fired += 1 }
+        let latch = FirstFrameLatch { fired += 1 }
 
-        // Constructed is not playing. This is the state the old signal — a
-        // connected peer connection — reported as success.
+        latch.cancel()
+        latch.frameArrived()
+
         XCTAssertEqual(fired, 0)
+    }
+
+    func testCancelAfterPlayingDoesNotFireAgain() {
+        var fired = 0
+        let latch = FirstFrameLatch { fired += 1 }
+
+        latch.frameArrived()
+        latch.cancel()
+        latch.frameArrived()
+
+        XCTAssertEqual(fired, 1)
     }
 
     func testFiresOnTheFirstFrame() {

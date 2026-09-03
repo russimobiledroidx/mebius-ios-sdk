@@ -402,9 +402,15 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     private var remoteVideoTrack: RTCVideoTrack?
     private var remoteAudioTrack: RTCAudioTrack?
     private var statsTimer: Timer?
-    private var playing = false
-    /// Watches the remote track for a real frame. Strongly held: libwebrtc keeps
-    /// only a weak reference to a renderer, so a local would be gone at once.
+    /// Watches the remote track for a real frame.
+    ///
+    /// Held so it can be removed and cancelled on teardown — not for lifetime:
+    /// `RTCVideoTrack` retains a renderer strongly (`_adapters` holds an
+    /// `RTCVideoRendererAdapter`, whose `videoRenderer` is not weak), and this
+    /// class never nils the track it is attached to. So an un-removed probe would
+    /// outlive the route, which is exactly what `stop()` prevents.
+    ///
+    /// Main-thread confined: written and read inside `onMain`.
     private var frameProbe: FirstFrameRenderer?
 
     #if canImport(UIKit)
@@ -464,13 +470,22 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     func stop() {
         statsTimer?.invalidate()
         statsTimer = nil
-        // Detach before the track goes: a late frame must not report playback for
-        // a route that has already been torn down.
-        if let probe = frameProbe {
-            remoteVideoTrack?.remove(probe)
+        // Cancel BEFORE removing. `removeRenderer:` blocks on libwebrtc's worker
+        // thread, so a frame already inside `renderFrame` makes removal wait for
+        // it — the latch would fire and report playback after this method
+        // returned. Closing the latch first leaves a frame in flight with nothing
+        // to report to.
+        let probe = frameProbe
+        probe?.cancel()
+        onMain { [weak self] in
+            guard let self else { return }
+            if let probe { self.remoteVideoTrack?.remove(probe) }
+            self.frameProbe = nil
+            // Release the tracks too: a probe hangs off the video one, and holding
+            // them past teardown keeps native objects alive for no reason.
+            self.remoteVideoTrack = nil
+            self.remoteAudioTrack = nil
         }
-        frameProbe = nil
-        playing = false
         peerConnection?.close()
         peerConnection = nil
         #if canImport(UIKit)
@@ -496,17 +511,23 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     /// even without UIKit, because the signal matters whether or not anything is
     /// on screen.
     private func attachFrameProbe(to track: RTCVideoTrack) {
-        guard frameProbe == nil else { return }
         let probe = FirstFrameRenderer { [weak self] in
             guard let self else { return }
-            guard !self.playing else { return }
-            self.playing = true
+            // No `playing` flag guarding this: the latch inside the probe already
+            // reports at most once, and a second flag written on the caller thread
+            // and read on the render thread was a data race buying nothing.
             self.onMain {
                 self.delegate?.subscribeTransportDidStartPlaying(self)
             }
         }
-        frameProbe = probe
-        track.add(probe)
+        // onMain so attach and detach agree on one thread. `addRenderer:` marshals
+        // itself onto libwebrtc's worker thread, so libwebrtc's own state is safe
+        // from any caller; the field is what needed confining.
+        onMain { [weak self] in
+            guard let self, self.frameProbe == nil else { return }
+            self.frameProbe = probe
+            track.add(probe)
+        }
     }
 
     #if canImport(UIKit)
@@ -536,6 +557,10 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     private func startStatsTimer() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // A `.connected` delivered after teardown would otherwise schedule a
+            // repeating timer nothing invalidates: harmless work, but it outlives
+            // the session it was measuring.
+            guard self.peerConnection != nil else { return }
             self.statsTimer?.invalidate()
             self.statsTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
                 self?.collectStats()

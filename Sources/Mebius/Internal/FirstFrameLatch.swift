@@ -25,6 +25,19 @@ final class FirstFrameLatch {
         self.onFirstFrame = onFirstFrame
     }
 
+    /// Stops the latch reporting, permanently.
+    ///
+    /// Needed because removal is not enough on its own. `removeRenderer:` makes a
+    /// blocking call onto libwebrtc's worker thread, so a frame already inside
+    /// `renderFrame` makes removal *wait* for it: the latch fires, the callback
+    /// hops to main, and playback gets reported after teardown returned. Closing
+    /// the latch first means a frame in flight has nothing to report to.
+    func cancel() {
+        lock.lock()
+        fired = true
+        lock.unlock()
+    }
+
     /// Called for each rendered frame. Only the first one is reported.
     func frameArrived() {
         lock.lock()
