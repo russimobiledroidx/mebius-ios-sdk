@@ -403,6 +403,9 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     private var remoteAudioTrack: RTCAudioTrack?
     private var statsTimer: Timer?
     private var playing = false
+    /// Watches the remote track for a real frame. Strongly held: libwebrtc keeps
+    /// only a weak reference to a renderer, so a local would be gone at once.
+    private var frameProbe: FirstFrameRenderer?
 
     #if canImport(UIKit)
     private weak var renderView: MebiusVideoView?
@@ -461,6 +464,13 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     func stop() {
         statsTimer?.invalidate()
         statsTimer = nil
+        // Detach before the track goes: a late frame must not report playback for
+        // a route that has already been torn down.
+        if let probe = frameProbe {
+            remoteVideoTrack?.remove(probe)
+        }
+        frameProbe = nil
+        playing = false
         peerConnection?.close()
         peerConnection = nil
         #if canImport(UIKit)
@@ -477,6 +487,26 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
 
     func setVolume(_ volume: Float) {
         remoteAudioTrack?.source.volume = Double(volume)
+    }
+
+    /// Adds a renderer whose only job is to notice the first decoded frame.
+    ///
+    /// A second renderer alongside the display one is how libwebrtc is meant to
+    /// be observed; it costs a callback per frame and nothing else. It is added
+    /// even without UIKit, because the signal matters whether or not anything is
+    /// on screen.
+    private func attachFrameProbe(to track: RTCVideoTrack) {
+        guard frameProbe == nil else { return }
+        let probe = FirstFrameRenderer { [weak self] in
+            guard let self else { return }
+            guard !self.playing else { return }
+            self.playing = true
+            self.onMain {
+                self.delegate?.subscribeTransportDidStartPlaying(self)
+            }
+        }
+        frameProbe = probe
+        track.add(probe)
     }
 
     #if canImport(UIKit)
@@ -544,6 +574,7 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams mediaStreams: [RTCMediaStream]) {
         if let videoTrack = rtpReceiver.track as? RTCVideoTrack {
             remoteVideoTrack = videoTrack
+            attachFrameProbe(to: videoTrack)
             #if canImport(UIKit)
             attachRemoteRendererIfPossible()
             #endif
@@ -555,13 +586,11 @@ final class RTCSubscribeTransport: NSObject, SubscribeTransport, RTCPeerConnecti
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         switch newState {
         case .connected:
-            guard !playing else { return }
-            playing = true
+            // Connected is ICE and DTLS, not media. Reporting playback here is
+            // what let a route that never sent a frame pass the player's
+            // first-frame budget and leave the viewer on a black frame; the frame
+            // probe attached in didAdd reports it instead.
             startStatsTimer()
-            onMain { [weak self] in
-                guard let self else { return }
-                self.delegate?.subscribeTransportDidStartPlaying(self)
-            }
         case .failed:
             fail(.connectionFailed)
         default:
