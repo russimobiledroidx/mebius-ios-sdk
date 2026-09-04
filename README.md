@@ -2,7 +2,7 @@
 
 Native Swift SDK for Mebius live video — broadcast from the camera and watch streams with a single, clean API.
 
-[![CocoaPods](https://img.shields.io/badge/pod-v0.1.0-blue.svg)](https://cocoapods.org/pods/Mebius)
+[![CocoaPods](https://img.shields.io/cocoapods/v/Mebius.svg)](https://cocoapods.org/pods/Mebius)
 [![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -29,35 +29,47 @@ Broadcasting needs camera and microphone access. Add these keys to your app's **
 <string>We use the microphone so others can hear your broadcast.</string>
 ```
 
-## 3. Install (from GitHub)
+## 3. Install
 
-Mebius is distributed **directly from its GitHub repository** — there is no public
-package-registry or CocoaPods-trunk entry required. The repository is **private**,
-so installation authenticates over **SSH**: make sure the developer's machine has a
-GitHub SSH key set up and added to an account with access to
-`russimobiledroidx/mebius-ios-sdk` (verify with `ssh -T git@github.com`). All
-commands below use the SSH git URL, which is what resolves a private repo.
+Mebius is published to **CocoaPods trunk** and available over **Swift Package
+Manager** from a public repository. No SSH key, no access grant, no `:git`
+override.
 
-> Releases are tagged `v0.1.0` (see *Tag form* note at the end of this section).
+Which one you pick is not a matter of taste:
+
+| | CocoaPods | Swift Package Manager |
+|---|---|---|
+| Scaled playback (HLS) | ✅ | ✅ |
+| Broadcast + sub-second playback | ✅ | ❌ documented stub |
+
+The real-time transport needs a binary that SwiftPM cannot carry, so the SPM
+build compiles the same public API with a placeholder behind it. **If your app
+broadcasts, or plays with sub-second latency, install via CocoaPods.**
+
+### CocoaPods (full functionality)
+
+```ruby
+pod 'Mebius', '~> 0.2.3'
+```
+
+```sh
+pod install
+```
 
 ### Swift Package Manager — via Xcode
 
 1. **File ▸ Add Package Dependencies…**
-2. In the search/URL field, paste the SSH URL:
+2. Paste the repository URL:
    ```
-   git@github.com:russimobiledroidx/mebius-ios-sdk.git
+   https://github.com/russimobiledroidx/mebius-ios-sdk
    ```
-3. Set the dependency rule to **Up to Next Major Version** starting at `0.1.0`
-   (or pick the exact tag `v0.1.0`).
+3. Set the dependency rule to **Up to Next Major Version** starting at `0.2.3`.
 4. Add the **`Mebius`** library product to your app target.
-
-The SSH URL works for private repos as long as Xcode/SPM can use the developer's
-GitHub SSH key.
 
 ### Swift Package Manager — via `Package.swift`
 
 ```swift
-.package(url: "git@github.com:russimobiledroidx/mebius-ios-sdk.git", from: "0.1.0")
+.package(url: "https://github.com/russimobiledroidx/mebius-ios-sdk", from: "0.2.3")
 ```
 
 …and add `"Mebius"` to the dependencies of the target that uses it:
@@ -69,53 +81,17 @@ GitHub SSH key.
 )
 ```
 
-### CocoaPods
-
-Point the pod straight at the private git repo and the release tag in your `Podfile`:
-
-```ruby
-pod 'Mebius', :git => 'git@github.com:russimobiledroidx/mebius-ios-sdk.git', :tag => 'v0.1.0'
-```
-
-Then run:
-
-```sh
-pod install
-```
-
-The `:git` source above overrides the URL declared in the podspec at consume time,
-so it always resolves the private repo over SSH.
-
-> **The SPM build ships the full public API and the scaled playback path.** The
-> real-time transport (broadcast and sub-second playback) sits behind a Swift
-> protocol and ships as a documented placeholder in the SPM build; the concrete
-> transport needs a binary distributed via CocoaPods. For those features, install
-> via CocoaPods (see the `MEBIUS_RTC` flag in `Mebius.podspec`).
-
 ### Tag form (SPM vs CocoaPods)
 
-Releases are published as the annotated git tag **`v0.2.1`**. SPM matches a SemVer
-requirement such as `from: "0.2.1"` against tags **with or without** a leading `v`,
-so the tag resolves correctly.
+Releases are annotated git tags of the form **`v0.2.3`**. SPM matches a SemVer
+requirement such as `from: "0.2.3"` against tags with or without a leading `v`,
+so it resolves either way.
 
-CocoaPods does not guess: it clones the exact string in `:tag`. The podspec used
-`s.version.to_s`, which asked for a tag named `0.2.0` while the repo tags `v0.2.0` —
-`pod trunk push` failed with *"Remote branch 0.2.0 not found in upstream origin"*. It
-now reads `"v#{s.version}"`, so the two can no longer drift.
-
----
-
-### Secondary: registry / trunk distribution
-
-> CocoaPods trunk is now a published path — `pod 'Mebius'` with no `:git` works, and
-> it is the only distribution that carries the real-time transport (SwiftPM does not
-> set `MEBIUS_RTC`, so publish and sub-second playback fall back to the stub there).
-> Validate a podspec before pushing with:
->
-> ```sh
-> pod lib lint Mebius.podspec      # local lint
-> pod spec lint Mebius.podspec     # remote lint (needs a pushed tag)
-> ```
+CocoaPods does not guess — it clones the exact string in the podspec's `:tag`.
+That field used to be `s.version.to_s`, which asked for a tag named `0.2.0` while
+the repo tags `v0.2.0`, and `pod trunk push` failed with *"Remote branch 0.2.0 not
+found in upstream origin"*. It now reads `"v#{s.version}"`, so the two cannot
+drift apart again.
 
 ## 4. Quick Start
 
@@ -362,7 +338,48 @@ client.onError = { error in
 
 Mebius follows [Semantic Versioning](https://semver.org). The public API is stable within a major version; breaking changes bump the major version across all Mebius platform SDKs simultaneously.
 
-Release notes live in [CHANGELOG.md](CHANGELOG.md).
+### Changelog
+
+#### 0.2.3
+- **Fixed: a viewer could get stuck on a black frame forever on the real-time
+  route.** Playback was reported from the peer connection reaching `connected`,
+  which means ICE and DTLS completed — true before any media flows, and still
+  true if none ever does. That satisfied the player's 8-second first-frame budget
+  for a route that had sent nothing, so the player never advanced to the next
+  route and there was no error to react to. Playback is now reported when a frame
+  actually arrives.
+- Two consequences worth knowing. A low-latency player can now legitimately fall
+  off the real-time route onto a buffered one — that is the fix working, not a
+  regression. And the 8-second budget now has to cover decoder warm-up and the
+  first keyframe as well as negotiation; a publisher slow to send one will fall
+  back rather than fail.
+- Teardown releases the remote tracks and closes the frame probe before removing
+  it, so a frame still in flight cannot report playback for a route that has
+  already stopped.
+
+  Known limitation, unchanged: a broadcast with no camera — audio only — cannot be
+  played on the real-time route, on any Mebius SDK. Audio arrives, but the
+  first-frame budget is waiting for a picture that never comes. Publish with video
+  if you need the real-time route.
+
+#### 0.2.2
+- Published H264 preference on the publishing transceiver. libwebrtc negotiated
+  VP8, which the gateway's segment-based deliveries cannot carry, so viewers off
+  the real-time route received audio only while the device showed a healthy
+  preview. (No entry was recorded at release; backfilled.)
+
+#### 0.2.1
+- `MebiusPlayer.mode` and delivery-route handling. (No entry was recorded at
+  release; backfilled from the release commit.)
+
+#### 0.2.0
+- Ordered playback routes with a per-route first-frame budget, and `deliveries`
+  passed through from the access token. (No entry was recorded at release;
+  backfilled from the release commit.)
+
+#### 0.1.0
+- Initial release: `Mebius`, `MebiusClient`, `MebiusBroadcaster`, `MebiusPlayer`, `MebiusVideoView`.
+- Broadcast, sub-second and scaled playback, delegate + closure events, `MebiusError`.
 
 ## 10. License
 
