@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'Mebius'
-  s.version          = '0.2.2'
+  s.version          = '0.2.3'
   s.summary          = 'Native iOS SDK for Mebius live video — broadcast and watch.'
   s.description      = <<-DESC
     Mebius is a native Swift SDK for live video on iOS. Broadcast from the
