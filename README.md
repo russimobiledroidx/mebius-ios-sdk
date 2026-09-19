@@ -163,6 +163,15 @@ player.play(streamId: "my-stream", view: videoView)
 | `.lowLatency` | Two-way interaction (co-broadcast). Costs one per-viewer session, so not for a plain audience. |
 | `.scale` | Largest audiences and unstable networks. |
 
+Mebius keeps watching the route it picked. One that stops delivering — an edge
+restarting, the publisher reconnecting, the device changing network — is
+reopened by the player itself: it reports buffering, walks the route list again,
+and reports playing once a route is serving. Only after five bounded attempts
+does it give up and report the end. So an app does not need its own restart loop
+for a long watch: handle buffering/playing for the spinner and the end for the
+end.
+
+
 Whatever the mode, playback walks an ordered route list and gives each route
 **8 seconds** to deliver video before moving on. A route that opens is not yet a
 route that plays: an edge with no ingest answers 200 with an empty stream, and a
