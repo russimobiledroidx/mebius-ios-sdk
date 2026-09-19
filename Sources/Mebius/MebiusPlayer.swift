@@ -90,6 +90,20 @@ public final class MebiusPlayer {
     private var routeAccepted = false
     private var watchdog: DispatchWorkItem?
 
+    // Reopening a route that WAS delivering and then stopped. See loseRoute().
+    private var recovery = RecoveryPolicy()
+    private var isRecovering = false
+    private var recoveryCause: MebiusError?
+    private var recoveryTask: DispatchWorkItem?
+    private var stallTask: DispatchWorkItem?
+
+    /// Set by ``stop()``. A recovery task can be several seconds deep in a
+    /// backoff when the caller gives up, and it must not reopen a route into a
+    /// player that has been torn down. A flag rather than blanking `streamId`,
+    /// which is public: an app reading it back after stop() must still see the
+    /// stream it was playing.
+    private var isStopped = false
+
     // The render target for the route walk. UIKit-gated because the view type is:
     // the package builds on macOS for tooling, where there is nothing to render into.
     #if canImport(UIKit)
@@ -129,6 +143,12 @@ public final class MebiusPlayer {
         self.pendingView = view
         routeIndex = 0
         routeAccepted = false
+        isStopped = false
+        isRecovering = false
+        recoveryCause = nil
+        recovery.reset()
+        cancelStall()
+        cancelRecovery()
         startCurrentRoute()
     }
 
@@ -216,6 +236,12 @@ public final class MebiusPlayer {
 
         routeIndex += 1
         guard routeIndex < routes.count else {
+            // Inside a recovery cycle this is not a verdict, it is one attempt that
+            // found nothing serving. The next attempt is the answer.
+            if isRecovering {
+                scheduleRecoveryAttempt()
+                return
+            }
             isPlaying = false
             #if canImport(UIKit)
             pendingView = nil
@@ -233,6 +259,12 @@ public final class MebiusPlayer {
     private func acceptRoute() {
         routeAccepted = true
         cancelWatchdog()
+        cancelStall()
+        // Proven healthy, so the recovery budget starts over. It counts
+        // CONSECUTIVE failures, not failures for the life of the player.
+        isRecovering = false
+        recoveryCause = nil
+        recovery.reset()
         isPlaying = true
         // Routes may differ in what they can offer, so the list is published per
         // accepted route rather than once per player.
@@ -247,20 +279,157 @@ public final class MebiusPlayer {
         onPlaying?()
     }
 
-    /// Routes a failure: a real failure once video has arrived, otherwise a skip.
+    /// Routes a failure: try to get the stream back once video has arrived,
+    /// otherwise skip to the next route.
     private func handleFailure(_ error: MebiusError) {
         if routeAccepted {
-            isPlaying = false
-            delegate?.mebiusPlayer(self, didFailWithError: error)
-            onError?(error)
+            loseRoute(error)
         } else {
             advance(after: error)
         }
     }
 
+    /// Treats the serving route as dead and starts reopening the stream.
+    ///
+    /// This is the difference between a broadcast a viewer can leave running and
+    /// one that has to be restarted by hand. Route selection ran once, in
+    /// ``play(streamId:view:)``: whichever route produced a frame served the rest
+    /// of the session, and when it later died — a CDN edge restarting, the
+    /// publisher reconnecting, the phone changing network — playback stopped and
+    /// stayed stopped.
+    ///
+    /// The reopen walks the full route list again rather than retrying the dead
+    /// one, because the usual causes take out one route and not the others. The
+    /// token needs no handling here: ``MebiusClient`` renews it on its own
+    /// schedule, and every route stamps the current token as it builds its URL.
+    ///
+    /// - Parameter cause: the failure that lost the route, or `nil` when it simply
+    ///   ended. Kept so that giving up reports what happened rather than a guess.
+    private func loseRoute(_ cause: MebiusError?) {
+        guard !isRecovering, routeAccepted else { return }
+        isRecovering = true
+        recoveryCause = cause
+        cancelWatchdog()
+        cancelStall()
+        // Tell the app before the first backoff. A spinner a second late still
+        // beats a still picture with nothing said about it.
+        delegate?.mebiusPlayerDidBuffer(self)
+        onBuffering?()
+        subscribeTransport?.stop()
+        scalePlayback?.stop()
+        subscribeTransport = nil
+        scalePlayback = nil
+        scheduleRecoveryAttempt()
+    }
+
+    private func scheduleRecoveryAttempt() {
+        cancelWatchdog()
+        cancelRecovery()
+        guard !recovery.isExhausted else {
+            giveUp()
+            return
+        }
+        let delay = recovery.nextDelay()
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.recoveryTask = nil
+            // stop() can land anywhere inside the backoff, and reopening into a
+            // view the app has released is worse than not recovering at all.
+            guard !self.isStopped, self.streamId != nil else { return }
+            self.routeIndex = 0
+            self.routeAccepted = false
+            #if canImport(UIKit)
+            guard self.pendingView != nil else { return }
+            self.startCurrentRoute()
+            #endif
+        }
+        recoveryTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
+    }
+
+    /// Every route refused for the whole budget. Either the broadcast really is
+    /// over or this device is off the network; both end the session as far as the
+    /// app is concerned, and the reason reported is the one that lost the route.
+    private func giveUp() {
+        isRecovering = false
+        isPlaying = false
+        subscribeTransport?.stop()
+        scalePlayback?.stop()
+        subscribeTransport = nil
+        scalePlayback = nil
+        let cause = recoveryCause
+        recoveryCause = nil
+        if let cause {
+            delegate?.mebiusPlayer(self, didFailWithError: cause)
+            onError?(cause)
+        } else {
+            delegate?.mebiusPlayerDidEnd(self)
+            onEnded?()
+        }
+    }
+
+    /// Starts the countdown that turns an endless stall into a lost route.
+    ///
+    /// Armed on the first buffering report and cancelled by playback. Re-arming on
+    /// every repeat would push the deadline out forever, because a frozen AVPlayer
+    /// keeps reporting.
+    private func armStall() {
+        guard stallTask == nil else { return }
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.stallTask = nil
+            self.loseRoute(nil)
+        }
+        stallTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + mebiusStallRecoveryTimeout, execute: task)
+    }
+
+    private func cancelStall() {
+        stallTask?.cancel()
+        stallTask = nil
+    }
+
+    private func cancelRecovery() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+    }
+
+    /// A route that was delivering reported buffering.
+    private func noteBuffering() {
+        if routeAccepted { armStall() }
+        delegate?.mebiusPlayerDidBuffer(self)
+        onBuffering?()
+    }
+
+    /// A route reported the end of what it can serve.
+    ///
+    /// Not necessarily the end of the broadcast: a segmented route says this when
+    /// the publisher reconnected, when the edge recycled the session, when the
+    /// playlist went away for a moment. On a broadcast that runs for days that
+    /// happens long before the host stops, so it is treated as a lost route and
+    /// PROVEN to be an ending — ``giveUp()`` emits the end once reopening failed.
+    private func noteEnded() {
+        guard routeAccepted else {
+            // It never delivered a frame, so this is not the broadcast ending —
+            // it is a route that closed on us, and the next one is the answer.
+            // Waiting for the first-frame watchdog instead would cost the viewer
+            // the rest of that budget for information already in hand.
+            advance(after: .connectionFailed)
+            return
+        }
+        loseRoute(nil)
+    }
+
     /// Stops playback and releases resources.
     public func stop() {
         assert(Thread.isMainThread, "Mebius must be used on the main thread")
+        cancelWatchdog()
+        cancelStall()
+        cancelRecovery()
+        isStopped = true
+        isRecovering = false
+        recoveryCause = nil
+        recovery.reset()
         subscribeTransport?.stop()
         scalePlayback?.stop()
         subscribeTransport = nil
@@ -295,14 +464,13 @@ extension MebiusPlayer: SubscribeTransportDelegate {
     }
 
     func subscribeTransportDidBuffer(_ transport: SubscribeTransport) {
-        delegate?.mebiusPlayerDidBuffer(self)
-        onBuffering?()
+        guard transport === subscribeTransport else { return }
+        noteBuffering()
     }
 
     func subscribeTransportDidEnd(_ transport: SubscribeTransport) {
-        isPlaying = false
-        delegate?.mebiusPlayerDidEnd(self)
-        onEnded?()
+        guard transport === subscribeTransport else { return }
+        noteEnded()
     }
 
     func subscribeTransport(_ transport: SubscribeTransport, didReportStats stats: MebiusPlayerStats) {
@@ -324,14 +492,13 @@ extension MebiusPlayer: ScalePlaybackDelegate {
     }
 
     func scalePlaybackDidBuffer(_ playback: ScalePlayback) {
-        delegate?.mebiusPlayerDidBuffer(self)
-        onBuffering?()
+        guard playback === scalePlayback else { return }
+        noteBuffering()
     }
 
     func scalePlaybackDidEnd(_ playback: ScalePlayback) {
-        isPlaying = false
-        delegate?.mebiusPlayerDidEnd(self)
-        onEnded?()
+        guard playback === scalePlayback else { return }
+        noteEnded()
     }
 
     func scalePlayback(_ playback: ScalePlayback, didReportStats stats: MebiusPlayerStats) {
@@ -340,8 +507,12 @@ extension MebiusPlayer: ScalePlaybackDelegate {
     }
 
     func scalePlayback(_ playback: ScalePlayback, didFail error: MebiusError) {
-        isPlaying = false
-        delegate?.mebiusPlayer(self, didFailWithError: error)
-        onError?(error)
+        // Identity-checked and routed like the realtime path. Without the guard a
+        // route the player had already abandoned could fail the one now playing;
+        // without handleFailure a segmented route that broke during the walk
+        // reported an error to the app instead of failing over to the next route,
+        // which is the one thing the route list exists to do.
+        guard playback === scalePlayback else { return }
+        handleFailure(error)
     }
 }
