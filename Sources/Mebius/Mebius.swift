@@ -1,5 +1,12 @@
 import Foundation
 
+/// Mints a fresh short-lived token from your backend.
+///
+/// Call the completion with the new token, or with `nil` if it could not be
+/// minted — Mebius then retries with backoff for as long as the current token is
+/// still valid. The completion may be called from any queue.
+public typealias MebiusTokenProvider = (@escaping (String?) -> Void) -> Void
+
 /// Entry point for the Mebius live streaming SDK.
 ///
 /// Initialize Mebius once with your application id and Mebius gateway endpoint,
@@ -57,13 +64,27 @@ public final class Mebius {
     ///     through as-is; Mebius orders it and picks from it. Optional, but without it
     ///     every viewer is served from Mebius origin rather than the nearest edge —
     ///     on mobile that is billed per viewer.
+    ///   - getToken: Makes the session outlive one token. Given a provider, Mebius
+    ///     mints a fresh credential shortly BEFORE `exp` and swaps it in place — no
+    ///     reconnect, no renegotiation, no visible gap. A failing provider is retried
+    ///     with backoff for as long as the current token is still valid, so
+    ///     ``MebiusError/tokenExpired`` is reported only when the credential has
+    ///     genuinely run out. Each renewal calls
+    ///     ``MebiusClientDelegate/mebiusClientDidRefreshToken(_:)``. Without it
+    ///     nothing changes: no renewal is scheduled and expiry surfaces exactly when
+    ///     it always did.
     /// - Returns: A connecting ``MebiusClient``.
-    public func connect(token: String, deliveries: [MebiusDelivery] = []) -> MebiusClient {
+    public func connect(
+        token: String,
+        deliveries: [MebiusDelivery] = [],
+        getToken: MebiusTokenProvider? = nil
+    ) -> MebiusClient {
         let client = MebiusClient(
             appId: appId,
             gateway: gateway,
             token: token,
-            deliveries: deliveries
+            deliveries: deliveries,
+            getToken: getToken
         )
         client.beginConnecting()
         return client

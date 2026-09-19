@@ -38,6 +38,41 @@ public final class MebiusPlayer {
     public var onStats: ((MebiusPlayerStats) -> Void)?
     /// Invoked on the main thread when an error occurs.
     public var onError: ((MebiusError) -> Void)?
+    /// Invoked on the main thread when the selectable renditions change.
+    public var onQualitiesChanged: (([MebiusQuality]) -> Void)?
+
+    /// Renditions this stream can actually be switched between.
+    ///
+    /// Empty means there is exactly one rendition — or a route with no such concept
+    /// — and a UI should HIDE its quality menu rather than offer a choice that does
+    /// not exist. That is the whole reason this exists: a player built against an
+    /// HLS ladder has a menu, and without a programmatic answer the only options
+    /// were to show a fake one or to delete the feature on a hunch.
+    ///
+    /// It is empty for every Mebius stream today: the engine publishes one rendition
+    /// and does no ladder transcoding. The property is here so a client can be
+    /// written once, against the honest answer, and keep working unchanged if that
+    /// ever changes.
+    ///
+    /// The list is per ROUTE, so it is re-read on failover and announced through
+    /// ``MebiusPlayerDelegate/mebiusPlayer(_:didChangeQualities:)``.
+    public private(set) var qualities: [MebiusQuality] = []
+
+    /// Chooses a rendition, or `"auto"` to let Mebius decide (the default).
+    ///
+    /// - Parameter id: `"auto"`, or an id from ``qualities``.
+    /// - Throws: ``MebiusError/streamNotFound`` if `id` is neither — a UI that asks
+    ///   for a rendition and gets no error would otherwise show the wrong state
+    ///   forever. Throwing does not touch playback: the stream keeps running on
+    ///   whatever it is running on.
+    public func setQuality(_ id: String) throws {
+        guard id == "auto" || qualities.contains(where: { $0.id == id }) else {
+            throw MebiusError.streamNotFound
+        }
+        // With one rendition there is nothing to switch to, so an accepted call is a
+        // no-op. No state is kept for it: an unread "selected id" would be a second
+        // source of truth to keep in step with the route, for no reader.
+    }
 
     private weak var client: MebiusClient?
     private let gateway: URL
@@ -199,6 +234,15 @@ public final class MebiusPlayer {
         routeAccepted = true
         cancelWatchdog()
         isPlaying = true
+        // Routes may differ in what they can offer, so the list is published per
+        // accepted route rather than once per player.
+        //
+        // No Mebius route exposes a ladder — the engine publishes a single rendition
+        // (`hlsVariant: lowLatency`, no ABR). Empty is the truthful answer, and this
+        // is the one place that has to change if that stops being true.
+        qualities = []
+        delegate?.mebiusPlayer(self, didChangeQualities: qualities)
+        onQualitiesChanged?(qualities)
         delegate?.mebiusPlayerDidStartPlaying(self)
         onPlaying?()
     }
