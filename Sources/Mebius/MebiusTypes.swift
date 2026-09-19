@@ -59,3 +59,27 @@ public struct MebiusPlayerStats: Equatable, Sendable {
         self.packetsReceived = packetsReceived
     }
 }
+
+/// One selectable rendition of a stream.
+///
+/// Mebius does not transcode into a ladder today, so a live stream has exactly
+/// one rendition and ``MebiusPlayer/qualities`` is empty. That emptiness is the
+/// signal, not an omission: a player UI can hide its quality menu because the
+/// list says there is nothing to choose, rather than because someone guessed.
+public struct MebiusQuality: Equatable, Sendable, Identifiable {
+    /// Stable id to pass to ``MebiusPlayer/setQuality(_:)``.
+    public let id: String
+    /// Human-readable label, e.g. `"720p"`. Safe to show as-is.
+    public let label: String
+    /// Frame height in pixels, when the rendition has a fixed one.
+    public let height: Int?
+    /// Nominal video bitrate in kbps, when known.
+    public let bitrateKbps: Int?
+
+    public init(id: String, label: String, height: Int? = nil, bitrateKbps: Int? = nil) {
+        self.id = id
+        self.label = label
+        self.height = height
+        self.bitrateKbps = bitrateKbps
+    }
+}

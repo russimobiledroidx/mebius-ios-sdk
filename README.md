@@ -246,12 +246,14 @@ Full UIKit examples are in [`Examples/UIKitExample`](Examples/UIKitExample).
 | Type | Member | Signature |
 |------|--------|-----------|
 | `Mebius` | init | `init(appId: String, gateway: URL)` |
-| `Mebius` | connect | `func connect(token: String, deliveries: [MebiusDelivery] = []) -> MebiusClient` |
+| `Mebius` | connect | `func connect(token: String, deliveries: [MebiusDelivery] = [], getToken: MebiusTokenProvider? = nil) -> MebiusClient` |
 | `MebiusClient` | createBroadcaster | `func createBroadcaster(video: Bool = true, audio: Bool = true) -> MebiusBroadcaster` |
 | `MebiusClient` | createPlayer | `func createPlayer(mode: MebiusPlayerMode = .auto) -> MebiusPlayer` |
 | `MebiusClient` | createMonitor | `func createMonitor() -> MebiusPlayer` |
 | `MebiusDelivery` | list | `static func list(fromTokenResponse: [String: Any]?) -> [MebiusDelivery]` |
-| `MebiusClient` | updateToken | `func updateToken(_ token: String)` |
+| `MebiusClient` | updateToken | `func updateToken(_ token: String) throws` |
+| `MebiusPlayer` | qualities | `var qualities: [MebiusQuality]` — empty means one rendition; hide the quality menu |
+| `MebiusPlayer` | setQuality | `func setQuality(_ id: String) throws` — `"auto"` or an id from `qualities` |
 | `MebiusClient` | disconnect | `func disconnect()` |
 | `MebiusClient` | events | `onConnected`, `onDisconnected`, `onError` closures + `delegate` |
 | `MebiusBroadcaster` | start | `func start(streamId: String)` |
@@ -308,6 +310,24 @@ public enum MebiusError: Error {
 }
 ```
 
+**Sessions longer than one token.** Pass `getToken:` to `connect` and Mebius
+renews the credential shortly *before* `exp`, swapping it in place — no
+reconnect, no renegotiation, no gap on screen. A provider that answers `nil` is
+retried with backoff while the current token is still valid, so `.tokenExpired`
+means the credential genuinely ran out. Each renewal calls
+`mebiusClientDidRefreshToken(_:)` / `onTokenRefreshed`.
+
+```swift
+let client = mebius.connect(token: firstToken) { done in
+    backend.mintToken { done($0) }   // nil if it could not be minted
+}
+```
+
+This matters most to a camera publisher: a match longer than the token's life is
+the difference between a seamless broadcast and a visible reconnect. Without
+`getToken:` nothing changes — no renewal is scheduled and expiry surfaces exactly
+when it always did.
+
 Recovery example:
 
 ```swift
@@ -315,8 +335,13 @@ client.onError = { error in
     switch error {
     case .tokenExpired:
         fetchFreshToken { token in
-            client.updateToken(token)
-            // recreate broadcaster/player or call connect again
+            // Main thread, like every other Mebius call — backend completion
+            // handlers usually are not. Better still: pass `getToken:` to connect
+            // and never reach this branch.
+            DispatchQueue.main.async {
+                try? client.updateToken(token)
+                // recreate broadcaster/player or call connect again
+            }
         }
     case .permissionDenied:
         showSettingsPrompt()
