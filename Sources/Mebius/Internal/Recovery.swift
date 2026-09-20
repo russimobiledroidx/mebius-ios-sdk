@@ -1,5 +1,19 @@
 import Foundation
 
+/// Ceiling on what a publisher's video encoder may send, in kbps.
+///
+/// 2500 matches what the studio's OBS encoder is configured to send, so a
+/// broadcast costs the same whichever path it came from — a host on a phone and a
+/// host in the studio bill identically.
+///
+/// A ceiling, not a target: WebRTC still spends less on still scenes. What it
+/// removes is the open end, where a capable device answered high-motion content
+/// with whatever it could encode.
+///
+/// Every Mebius SDK carries this same number. Changing it in one place without the
+/// others makes the cost of a broadcast depend on which device made it.
+public let mebiusDefaultMaxBitrateKbps = 2500
+
 /// How long the picture may stand still before its route is treated as dead.
 ///
 /// A route that stops delivering does not announce it: AVPlayer reports one more

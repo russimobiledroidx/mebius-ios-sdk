@@ -172,6 +172,7 @@ final class RTCPublishTransport: NSObject, PublishTransport, RTCPeerConnectionDe
             videoTrack = track
             pc.add(track, streamIds: [streamId])
             startCapture(source: source)
+            applyBitrateCap(on: pc)
             #if canImport(UIKit)
             attachLocalRendererIfPossible()
             #endif
@@ -204,6 +205,29 @@ final class RTCPublishTransport: NSObject, PublishTransport, RTCPeerConnectionDe
                     }
                 }
             }
+        }
+    }
+
+    /// Caps what the video encoder may send.
+    ///
+    /// The capture format does not do this. It bounds the SOURCE — how many pixels
+    /// arrive per second — while the encoder still chooses how many bits to spend
+    /// describing them, and high-motion content (sport, above all) makes it spend
+    /// near the top of its range. The sender's own encoding parameters are the only
+    /// place the ceiling is real.
+    ///
+    /// Why it reaches past this device: nothing transcodes anywhere in the path, so
+    /// every viewer is delivered at exactly the bitrate published here. One
+    /// publisher's setting is multiplied by the size of its audience.
+    private func applyBitrateCap(on pc: RTCPeerConnection) {
+        guard config.maxBitrateKbps > 0 else { return }
+        let cap = NSNumber(value: config.maxBitrateKbps * 1000)
+        for sender in pc.senders where sender.track?.kind == kRTCMediaStreamTrackKindVideo {
+            let params = sender.parameters
+            for encoding in params.encodings {
+                encoding.maxBitrateBps = cap
+            }
+            sender.parameters = params
         }
     }
 

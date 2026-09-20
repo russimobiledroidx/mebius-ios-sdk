@@ -20,6 +20,8 @@ struct PublishConfig {
     let streamId: String
     let video: Bool
     let audio: Bool
+    /// Ceiling on what the video encoder may send, in kbps. Zero lifts it.
+    let maxBitrateKbps: Int
 }
 
 /// Describes the configuration handed to a low-latency subscribe transport.
