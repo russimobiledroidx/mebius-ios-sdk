@@ -36,6 +36,7 @@ public final class MebiusBroadcaster {
     /// Invoked on the main thread when an error occurs.
     public var onError: ((MebiusError) -> Void)?
 
+    private let maxBitrateKbps: Int
     private weak var client: MebiusClient?
     private let gateway: URL
     private let token: String
@@ -46,12 +47,20 @@ public final class MebiusBroadcaster {
     private weak var previewView: MebiusVideoView?
     #endif
 
-    init(client: MebiusClient, gateway: URL, token: String, video: Bool, audio: Bool) {
+    init(
+        client: MebiusClient,
+        gateway: URL,
+        token: String,
+        video: Bool,
+        audio: Bool,
+        maxBitrateKbps: Int = mebiusDefaultMaxBitrateKbps
+    ) {
         self.client = client
         self.gateway = gateway
         self.token = token
         self.video = video
         self.audio = audio
+        self.maxBitrateKbps = maxBitrateKbps
         self.videoEnabled = video
         self.audioEnabled = audio
     }
@@ -88,7 +97,8 @@ public final class MebiusBroadcaster {
             token: client.currentToken,
             streamId: streamId,
             video: video,
-            audio: audio
+            audio: audio,
+            maxBitrateKbps: maxBitrateKbps
         )
 
         let transport = TransportRegistry.factory.makePublishTransport(config: config)

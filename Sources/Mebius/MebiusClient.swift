@@ -275,13 +275,30 @@ public final class MebiusClient {
     ///   - video: Whether to capture and publish camera video. Defaults to `true`.
     ///   - audio: Whether to capture and publish microphone audio. Defaults to `true`.
     /// - Returns: A configured ``MebiusBroadcaster``.
-    public func createBroadcaster(video: Bool = true, audio: Bool = true) -> MebiusBroadcaster {
+    /// Creates a broadcaster for publishing from this device.
+    ///
+    /// - Parameter maxBitrateKbps: ceiling on what the video encoder may send.
+    ///   Defaults to the ceiling every Mebius SDK uses, which matches the studio's
+    ///   OBS encoder — so a broadcast costs the same whichever path it came from.
+    ///   Pass 0 to lift it and let WebRTC decide.
+    ///
+    ///   Worth understanding before changing: nothing transcodes downstream, so
+    ///   every viewer is delivered at exactly the bitrate published here. One
+    ///   broadcaster's setting is multiplied by the size of its audience — a number
+    ///   that looks generous for one host is a bandwidth bill for a thousand
+    ///   viewers.
+    public func createBroadcaster(
+        video: Bool = true,
+        audio: Bool = true,
+        maxBitrateKbps: Int = mebiusDefaultMaxBitrateKbps
+    ) -> MebiusBroadcaster {
         MebiusBroadcaster(
             client: self,
             gateway: gateway,
             token: token,
             video: video,
-            audio: audio
+            audio: audio,
+            maxBitrateKbps: maxBitrateKbps
         )
     }
 
