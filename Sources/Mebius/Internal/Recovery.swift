@@ -2,7 +2,7 @@ import Foundation
 
 /// Ceiling on what a publisher's video encoder may send, in kbps.
 ///
-/// 3500 matches what the studio's OBS encoder is configured to send, so a
+/// 2500 matches what the studio's OBS encoder is configured to send, so a
 /// broadcast costs the same whichever path it came from — a host on a phone and a
 /// host in the studio bill identically.
 ///
@@ -12,7 +12,7 @@ import Foundation
 ///
 /// Every Mebius SDK carries this same number. Changing it in one place without the
 /// others makes the cost of a broadcast depend on which device made it.
-public let mebiusDefaultMaxBitrateKbps = 3500
+public let mebiusDefaultMaxBitrateKbps = 2500
 
 /// How long the picture may stand still before its route is treated as dead.
 ///
