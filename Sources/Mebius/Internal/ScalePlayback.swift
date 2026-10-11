@@ -14,6 +14,8 @@ import UIKit
 protocol ScalePlaybackDelegate: AnyObject {
     func scalePlaybackDidStartPlaying(_ playback: ScalePlayback)
     func scalePlaybackDidBuffer(_ playback: ScalePlayback)
+    /// Playback can keep up again after having started — the end of a rebuffer.
+    func scalePlaybackDidResume(_ playback: ScalePlayback)
     func scalePlaybackDidEnd(_ playback: ScalePlayback)
     func scalePlayback(_ playback: ScalePlayback, didReportStats stats: MebiusPlayerStats)
     func scalePlayback(_ playback: ScalePlayback, didFail error: MebiusError)
@@ -146,15 +148,23 @@ final class ScalePlayback {
 
         let likelyToKeepUpObserver = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] item, _ in
             guard let self, item.isPlaybackLikelyToKeepUp else { return }
-            DispatchQueue.main.async {
-                if !self.hasReportedPlaying {
-                    self.hasReportedPlaying = true
-                    self.delegate?.scalePlaybackDidStartPlaying(self)
-                }
-            }
+            DispatchQueue.main.async { self.noteLikelyToKeepUp() }
         }
 
         observers = [statusObserver, bufferEmptyObserver, likelyToKeepUpObserver]
+    }
+
+    /// The first time per session is the start of playback; every later time is a
+    /// recovery from a rebuffer. `hasReportedPlaying` is deliberately NOT reset by
+    /// ``reopen(url:)``: a quality switch continues the session, and reporting it
+    /// as a fresh start would re-run route acceptance. Reset only by ``stop()``.
+    func noteLikelyToKeepUp() {
+        if hasReportedPlaying {
+            delegate?.scalePlaybackDidResume(self)
+        } else {
+            hasReportedPlaying = true
+            delegate?.scalePlaybackDidStartPlaying(self)
+        }
     }
 
     private func observeEnd(_ item: AVPlayerItem) {

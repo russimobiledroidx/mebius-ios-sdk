@@ -441,4 +441,54 @@ final class QualityLadderTests: XCTestCase {
         XCTAssertEqual(announced, 0)
         XCTAssertThrowsError(try player.setQuality("720p"))
     }
+
+    // MARK: Re-audit round
+
+    func testCodableSkipsOnlyTheMalformedRung() throws {
+        struct Body: Decodable { let deliveries: [MebiusDelivery] }
+        let json = #"""
+        {"deliveries":[{"kind":"wide","path":"/d/wide/s1","renditions":[
+          {"id":"1080p","height":1080,"bitrateKbps":5000,"path":"/d/wide/s1/1080p"},
+          {"height":360},
+          "nonsense",
+          {"id":"","path":"/d/wide/s1/x"},
+          {"id":"720p","height":"tall","bitrateKbps":2800,"path":"/d/wide/s1/720p"},
+          [1, 2],
+          {"id":"480p","height":480,"bitrateKbps":1000,"path":"/d/wide/s1/480p"}]}]}
+        """#
+        let decoded = try JSONDecoder().decode(Body.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.deliveries[0].renditions, [
+            ladder[0],
+            MebiusRendition(id: "720p", height: nil, bitrateKbps: 2800, path: "/d/wide/s1/720p"),
+            ladder[2],
+        ])
+    }
+
+    func testOnlyTheFirstKeepUpStartsPlaybackAndLaterOnesResumeIt() {
+        final class Recorder: ScalePlaybackDelegate {
+            var events: [String] = []
+            func scalePlaybackDidStartPlaying(_ playback: ScalePlayback) { events.append("start") }
+            func scalePlaybackDidBuffer(_ playback: ScalePlayback) { events.append("buffer") }
+            func scalePlaybackDidResume(_ playback: ScalePlayback) { events.append("resume") }
+            func scalePlaybackDidEnd(_ playback: ScalePlayback) {}
+            func scalePlayback(_ playback: ScalePlayback, didReportStats stats: MebiusPlayerStats) {}
+            func scalePlayback(_ playback: ScalePlayback, didFail error: MebiusError) {}
+            func scalePlayback(_ playback: ScalePlayback, didSwitchToHeight height: Double, bitrate: Double) {}
+        }
+        let recorder = Recorder()
+        let playback = ScalePlayback(url: URL(string: "https://gateway.mebius.io/d/wide/s1")!, token: "t")
+        playback.delegate = recorder
+
+        playback.noteLikelyToKeepUp()
+        // Without the resume, the stall timer armed by a mid-play rebuffer was never
+        // cancelled, and a route that had recovered on its own was torn down anyway.
+        playback.noteLikelyToKeepUp()
+        playback.reopen(url: URL(string: "https://gateway.mebius.io/d/wide/s1/720p")!)
+        playback.noteLikelyToKeepUp()
+        XCTAssertEqual(recorder.events, ["start", "resume", "resume"], "a quality reopen is not a fresh start")
+
+        playback.stop()
+        playback.noteLikelyToKeepUp()
+        XCTAssertEqual(recorder.events.last, "start", "stop() ends the session")
+    }
 }

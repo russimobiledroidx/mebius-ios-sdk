@@ -34,7 +34,24 @@ public struct MebiusDelivery: Equatable, Sendable, Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = try c.decode(String.self, forKey: .kind)
         path = try c.decode(String.self, forKey: .path)
-        renditions = (try? c.decodeIfPresent([MebiusRendition].self, forKey: .renditions)) ?? []
+        // Rung by rung, so one malformed rung costs that rung only — the same rule
+        // as list(fromJSON:).
+        var rungs: [MebiusRendition] = []
+        if var list = try? c.nestedUnkeyedContainer(forKey: .renditions) {
+            while !list.isAtEnd {
+                if let rung = try? list.decode(MebiusRendition.self) {
+                    rungs.append(rung)
+                } else if (try? list.decode(SkippedValue.self)) == nil {
+                    break
+                }
+            }
+        }
+        renditions = rungs
+    }
+
+    // Consumes one array element of any shape, so decoding can move past it.
+    private struct SkippedValue: Decodable {
+        init(from decoder: Decoder) {}
     }
 
     /// Whether this route is safe to resolve against the Mebius gateway.
@@ -106,5 +123,20 @@ public struct MebiusRendition: Equatable, Sendable, Decodable {
         self.height = height
         self.bitrateKbps = bitrateKbps
         self.path = path
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, height, bitrateKbps, path }
+
+    // Same rule as MebiusDelivery.list(fromJSON:): id and path are required and
+    // non-empty; an unreadable height or bitrate is unknown, not a bad rung.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        path = try c.decode(String.self, forKey: .path)
+        guard !id.isEmpty, !path.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "empty id or path")
+        }
+        height = (try? c.decodeIfPresent(Int.self, forKey: .height)) ?? nil
+        bitrateKbps = (try? c.decodeIfPresent(Int.self, forKey: .bitrateKbps)) ?? nil
     }
 }

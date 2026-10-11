@@ -103,14 +103,20 @@ public final class MebiusPlayer {
     /// restriction survives failover and recovery.
     public func setAllowedQualities(_ ids: [String]?) {
         assert(Thread.isMainThread, "Mebius must be used on the main thread")
+        let before = allowedQualities
         allowedQualities = ids
-        guard routeAccepted, routeIndex < routes.count else { return }
-        let before = qualities
-        publishQualities(for: routes[routeIndex])
-        guard qualities != before else { return }
-        selectedQuality = resolvedQuality(selectedQuality, on: routes[routeIndex], allowed: allowedQualities)
+        guard routeIndex < routes.count else { return }
+        let route = routes[routeIndex]
+        guard allowedRenditions(route.renditions, allowed: ids)
+                != allowedRenditions(route.renditions, allowed: before) else { return }
+        // The list is announced only for a route that is serving; one still being
+        // opened announces it on acceptance, filtered by then.
+        if routeAccepted { publishQualities(for: route) }
+        selectedQuality = resolvedQuality(selectedQuality, on: route, allowed: allowedQualities)
         // On the master the variants changed with the filter, so it is reopened
-        // with the new `q`; a pin that is still allowed keeps playing untouched.
+        // with the new `q` — also before acceptance, or the master already being
+        // opened would play rungs that are no longer allowed. A pin that is still
+        // allowed keeps playing untouched.
         if selectedQuality == "auto" {
             reportedQuality = nil
             reopenOnSelectedQuality()
@@ -214,6 +220,10 @@ public final class MebiusPlayer {
 
         let route = routes[routeIndex]
         let endpoints = client.gatewayEndpoints
+        // A new route reports its rendition afresh. Cleared here, not on acceptance:
+        // the first access-log entry can land before the route is accepted, and
+        // clearing after it would announce the same rendition twice.
+        reportedQuality = nil
 
         if route.isRealtime {
             let config = SubscribeConfig(
@@ -397,7 +407,6 @@ public final class MebiusPlayer {
         // sent a ladder with has one; every other route answers empty, as before.
         let route = routes[routeIndex]
         publishQualities(for: route)
-        reportedQuality = nil
         // A pin survives failover only onto a route that offers it; anywhere else
         // the route is already playing its master (scalePath fell back), so the
         // selection is made to say so.
@@ -623,6 +632,13 @@ extension MebiusPlayer: ScalePlaybackDelegate {
     func scalePlaybackDidBuffer(_ playback: ScalePlayback) {
         guard playback === scalePlayback else { return }
         noteBuffering()
+    }
+
+    func scalePlaybackDidResume(_ playback: ScalePlayback) {
+        // Recovered from a rebuffer by itself: the stall countdown armed by that
+        // rebuffer must not go on to tear down a route that is playing again.
+        guard playback === scalePlayback else { return }
+        cancelStall()
     }
 
     func scalePlaybackDidEnd(_ playback: ScalePlayback) {
