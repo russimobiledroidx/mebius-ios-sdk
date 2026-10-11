@@ -288,3 +288,100 @@ final class PlaybackRouteTests: XCTestCase {
         XCTAssertEqual(client.createMonitor().mode, .lowLatency)
     }
 }
+
+final class QualityLadderTests: XCTestCase {
+
+    private let ladder = [
+        MebiusRendition(id: "1080p", height: 1080, bitrateKbps: 5000, path: "/d/wide/s1/1080p"),
+        MebiusRendition(id: "720p", height: 720, bitrateKbps: 2800, path: "/d/wide/s1/720p"),
+        MebiusRendition(id: "480p", height: 480, bitrateKbps: 1000, path: "/d/wide/s1/480p"),
+    ]
+
+    private let tokenBody = """
+    {"token":"t","deliveries":[
+      {"kind":"fast","path":"/d/fast/s1","renditions":[{"id":"720p","height":720,"bitrateKbps":2800,"path":"/d/fast/s1/720p"}]},
+      {"kind":"wide","path":"/d/wide/s1","extra":true,"renditions":[
+        {"id":"1080p","height":1080,"bitrateKbps":5000,"path":"/d/wide/s1/1080p","codec":"avc1"},
+        {"id":"720p","height":720,"bitrateKbps":2800,"path":"/d/wide/s1/720p"},
+        {"id":"480p","height":480,"bitrateKbps":1000,"path":"/d/wide/s1/480p"},
+        {"height":360}]},
+      {"kind":"local","path":"/live/s1/index.m3u8"}]}
+    """
+
+    func testRenditionsDecodeFromTheTokenResponse() throws {
+        let body = try JSONSerialization.jsonObject(with: Data(tokenBody.utf8)) as? [String: Any]
+        let parsed = MebiusDelivery.list(fromTokenResponse: body)
+        XCTAssertEqual(parsed.count, 3)
+        XCTAssertEqual(parsed[1].renditions, ladder, "the id-less rung is dropped, unknown fields ignored")
+        XCTAssertTrue(parsed[2].renditions.isEmpty)
+    }
+
+    func testRenditionsDecodeWithCodableAndTolerateAbsence() throws {
+        struct Body: Decodable { let deliveries: [MebiusDelivery] }
+        let plain = try JSONDecoder().decode(Body.self, from: Data(#"{"deliveries":[{"kind":"wide","path":"/d/wide/s1","new":1}]}"#.utf8))
+        XCTAssertEqual(plain.deliveries, [MebiusDelivery(kind: "wide", path: "/d/wide/s1")])
+
+        let broken = try JSONDecoder().decode(Body.self, from: Data(#"{"deliveries":[{"kind":"wide","path":"/d/wide/s1","renditions":"x"}]}"#.utf8))
+        XCTAssertTrue(broken.deliveries[0].renditions.isEmpty, "a bad ladder costs the menu, not the route")
+
+        let laddered = try JSONDecoder().decode(Body.self, from: Data(#"{"deliveries":[{"kind":"wide","path":"/d/wide/s1","renditions":[{"id":"720p","height":720,"bitrateKbps":2800,"path":"/d/wide/s1/720p"}]}]}"#.utf8))
+        XCTAssertEqual(laddered.deliveries[0].renditions, [ladder[1]])
+    }
+
+    func testOnlyTheWideRouteCarriesTheLadderAndOffHostRungsAreDropped() {
+        let routes = buildPlaybackRoutes(mode: .auto, deliveries: [
+            MebiusDelivery(kind: "wide", path: "/d/wide/s1",
+                           renditions: ladder + [MebiusRendition(id: "evil", height: 240, path: "https://evil.example/x")]),
+            MebiusDelivery(kind: "local", path: "/live/s1/index.m3u8", renditions: ladder),
+        ])
+        XCTAssertEqual(routes[0].renditions, ladder)
+        XCTAssertTrue(routes[1].renditions.isEmpty)
+        XCTAssertTrue(routes[2].renditions.isEmpty)
+    }
+
+    func testNoLadderLeavesEverythingAsItWas() {
+        let routes = buildPlaybackRoutes(mode: .auto, deliveries: [MebiusDelivery(kind: "wide", path: "/d/wide/s1")])
+        XCTAssertTrue(routes.allSatisfy { $0.renditions.isEmpty })
+        XCTAssertEqual(scalePath(for: routes[0], quality: "auto"), "/d/wide/s1")
+        XCTAssertEqual(peakBitRate([], maxHeight: 720), 0)
+        XCTAssertNil(closestRendition([], height: 720, bitrate: 2_800_000))
+
+        let player = Mebius(appId: "a", gateway: URL(string: "https://gateway.mebius.io")!)
+            .connect(token: "t").createPlayer()
+        XCTAssertTrue(player.qualities.isEmpty)
+        XCTAssertNoThrow(try player.setQuality("auto"))
+        XCTAssertThrowsError(try player.setQuality("720p"))
+    }
+
+    func testManualPickOpensTheRungWithTheSameToken() {
+        let route = PlaybackRoute(isRealtime: false, deliveryPath: "/d/wide/s1", renditions: ladder)
+        XCTAssertEqual(scalePath(for: route, quality: "auto"), "/d/wide/s1")
+        XCTAssertEqual(scalePath(for: route, quality: "unknown"), "/d/wide/s1")
+        let path = scalePath(for: route, quality: "720p")!
+        let url = GatewayEndpoints(gateway: URL(string: "https://gateway.mebius.io")!)
+            .deliveryURL(path: path, token: "tok")!
+        XCTAssertEqual(url.absoluteString, "https://gateway.mebius.io/d/wide/s1/720p?token=tok")
+    }
+
+    func testRungPickUnderAMaxCap() {
+        XCTAssertEqual(cappedRendition(ladder, maxHeight: nil)?.id, "1080p")
+        XCTAssertEqual(cappedRendition(ladder, maxHeight: 1080)?.id, "1080p")
+        XCTAssertEqual(cappedRendition(ladder, maxHeight: 900)?.id, "720p")
+        XCTAssertEqual(cappedRendition(ladder, maxHeight: 360)?.id, "480p", "a cap below the ladder still plays")
+
+        // Just below the cheapest excluded rung, so the allowed rung's audio and
+        // overhead on top of its video bitrate do not exclude it too.
+        XCTAssertEqual(peakBitRate(ladder, maxHeight: 720), 4_999_999)
+        XCTAssertEqual(peakBitRate(ladder, maxHeight: 480), 2_799_999)
+        XCTAssertEqual(peakBitRate(ladder, maxHeight: 1080), 0)
+        XCTAssertEqual(peakBitRate(ladder, maxHeight: nil), 0)
+    }
+
+    func testAccessLogMapsToTheClosestRendition() {
+        XCTAssertEqual(closestRendition(ladder, height: 720, bitrate: 0), "720p")
+        XCTAssertEqual(closestRendition(ladder, height: 1072, bitrate: 1_000_000), "1080p", "height wins")
+        XCTAssertEqual(closestRendition(ladder, height: 0, bitrate: 3_100_000), "720p")
+        XCTAssertEqual(closestRendition(ladder, height: 0, bitrate: 900_000), "480p")
+        XCTAssertNil(closestRendition(ladder, height: 0, bitrate: -1))
+    }
+}

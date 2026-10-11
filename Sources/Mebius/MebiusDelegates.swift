@@ -62,8 +62,12 @@ public protocol MebiusPlayerDelegate: AnyObject {
     func mebiusPlayer(_ player: MebiusPlayer, didFailWithError error: MebiusError)
     /// The selectable renditions changed, because the player moved to a
     /// different delivery route. Called once per accepted route, carrying the
-    /// list as it now stands — today always empty, since no route offers a ladder.
+    /// list as it now stands — empty unless the route carries a quality ladder.
     func mebiusPlayer(_ player: MebiusPlayer, didChangeQualities qualities: [MebiusQuality])
+    /// The rendition now playing changed: `id` is from ``MebiusPlayer/qualities``,
+    /// and `auto` says whether Mebius chose it or the app pinned it. Never called
+    /// for a stream without a ladder.
+    func mebiusPlayer(_ player: MebiusPlayer, didChangeQuality id: String, auto: Bool)
 }
 
 public extension MebiusPlayerDelegate {
@@ -73,4 +77,5 @@ public extension MebiusPlayerDelegate {
     func mebiusPlayer(_ player: MebiusPlayer, didReportStats stats: MebiusPlayerStats) {}
     func mebiusPlayer(_ player: MebiusPlayer, didFailWithError error: MebiusError) {}
     func mebiusPlayer(_ player: MebiusPlayer, didChangeQualities qualities: [MebiusQuality]) {}
+    func mebiusPlayer(_ player: MebiusPlayer, didChangeQuality id: String, auto: Bool) {}
 }

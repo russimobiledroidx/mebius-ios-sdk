@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- Quality selection for streams served with a quality ladder. A `wide` delivery
+  may now carry `renditions` (1080p / 720p / 480p); the player lists them in
+  `qualities`, pins one with `setQuality(_:)`, caps adaptive playback with
+  `setMaxQuality(height:)`, and reports the rendition playing through
+  `onQualityChanged` / `mebiusPlayer(_:didChangeQuality:auto:)`.
+
+  A delivery without `renditions` behaves exactly as before: `qualities` stays
+  empty, no variant limits are set and no quality event fires. Integrators
+  that do not publish with the official encoder profile need change nothing.
+
 ## 0.4.0
 
 - Publishing is capped at 2500 kbps by default, matching the studio's OBS encoder,

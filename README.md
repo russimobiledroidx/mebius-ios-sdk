@@ -178,6 +178,31 @@ route that plays: an edge with no ingest answers 200 with an empty stream, and a
 real-time connection reports itself connected while zero frames arrive. Both used
 to leave the viewer on a black frame with no error to react to.
 
+### Quality
+
+A stream published with the official encoder profile is served with a quality
+ladder (1080p / 720p / 480p) on the `wide` route, and the player exposes it. For
+any other stream `qualities` stays empty and nothing about playback changes, so
+build the menu off the list rather than off the stream:
+
+```swift
+player.onQualitiesChanged = { qualities in menu.isHidden = qualities.isEmpty }
+player.onQualityChanged = { id, auto in label.text = auto ? "Auto (\(id))" : id }
+
+try player.setQuality("720p")          // pin a rendition
+try player.setQuality("auto")          // back to adaptive (the default)
+player.setMaxQuality(height: 720)      // cap what auto may pick; nil lifts it
+```
+
+A pin reopens the stream on that rendition alone (AVPlayer cannot pin a variant
+of a master playlist reliably); volume and mute carry over. The cap applies to
+`"auto"` only — a pin is the viewer's explicit choice. The rendition auto is
+playing is reported from AVPlayer's access log, mapped to the nearest id.
+
+Server side: stream-engine `docs/INTEGRATION.md` §3.1 "Official encoder profile"
+(what the publisher must send for a ladder to exist) and §5.9 "Quality renditions"
+(the `renditions` field on `deliveries`).
+
 ### Watching the other side of a co-broadcast
 
 ```swift
@@ -261,8 +286,10 @@ Full UIKit examples are in [`Examples/UIKitExample`](Examples/UIKitExample).
 | `MebiusClient` | createMonitor | `func createMonitor() -> MebiusPlayer` |
 | `MebiusDelivery` | list | `static func list(fromTokenResponse: [String: Any]?) -> [MebiusDelivery]` |
 | `MebiusClient` | updateToken | `func updateToken(_ token: String) throws` |
-| `MebiusPlayer` | qualities | `var qualities: [MebiusQuality]` — empty means one rendition; hide the quality menu |
+| `MebiusPlayer` | qualities | `var qualities: [MebiusQuality]` (`id`, `height`, `bitrateKbps`) — empty means one rendition; hide the quality menu |
 | `MebiusPlayer` | setQuality | `func setQuality(_ id: String) throws` — `"auto"` or an id from `qualities` |
+| `MebiusPlayer` | setMaxQuality | `func setMaxQuality(height: Int?)` — caps `"auto"`; `nil` lifts the cap |
+| `MebiusPlayer` | quality events | `onQualitiesChanged: ([MebiusQuality]) -> Void`, `onQualityChanged: (_ id: String, _ auto: Bool) -> Void` |
 | `MebiusClient` | disconnect | `func disconnect()` |
 | `MebiusClient` | events | `onConnected`, `onDisconnected`, `onError` closures + `delegate` |
 | `MebiusBroadcaster` | start | `func start(streamId: String)` |
@@ -301,6 +328,8 @@ public protocol MebiusPlayerDelegate: AnyObject {
     func mebiusPlayerDidEnd(_ player: MebiusPlayer)
     func mebiusPlayer(_ player: MebiusPlayer, didReportStats stats: MebiusPlayerStats)
     func mebiusPlayer(_ player: MebiusPlayer, didFailWithError error: MebiusError)
+    func mebiusPlayer(_ player: MebiusPlayer, didChangeQualities qualities: [MebiusQuality])
+    func mebiusPlayer(_ player: MebiusPlayer, didChangeQuality id: String, auto: Bool)
 }
 ```
 

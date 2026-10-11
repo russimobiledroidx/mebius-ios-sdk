@@ -40,6 +40,9 @@ public final class MebiusPlayer {
     public var onError: ((MebiusError) -> Void)?
     /// Invoked on the main thread when the selectable renditions change.
     public var onQualitiesChanged: (([MebiusQuality]) -> Void)?
+    /// Invoked on the main thread with the rendition now playing and whether Mebius
+    /// chose it (`auto`) or the app did.
+    public var onQualityChanged: ((_ id: String, _ auto: Bool) -> Void)?
 
     /// Renditions this stream can actually be switched between.
     ///
@@ -49,10 +52,10 @@ public final class MebiusPlayer {
     /// HLS ladder has a menu, and without a programmatic answer the only options
     /// were to show a fake one or to delete the feature on a hunch.
     ///
-    /// It is empty for every Mebius stream today: the engine publishes one rendition
-    /// and does no ladder transcoding. The property is here so a client can be
-    /// written once, against the honest answer, and keep working unchanged if that
-    /// ever changes.
+    /// It is filled only when the gateway offered a ladder with the route (a
+    /// stream published with the official encoder profile, played over the `wide`
+    /// route); for every other stream it stays empty and nothing about playback
+    /// changes.
     ///
     /// The list is per ROUTE, so it is re-read on failover and announced through
     /// ``MebiusPlayerDelegate/mebiusPlayer(_:didChangeQualities:)``.
@@ -69,10 +72,29 @@ public final class MebiusPlayer {
         guard id == "auto" || qualities.contains(where: { $0.id == id }) else {
             throw MebiusError.streamNotFound
         }
-        // With one rendition there is nothing to switch to, so an accepted call is a
-        // no-op. No state is kept for it: an unread "selected id" would be a second
-        // source of truth to keep in step with the route, for no reader.
+        // With one rendition, "auto" is the only accepted id and changes nothing.
+        guard id != selectedQuality else { return }
+        selectedQuality = id
+        reportedQuality = nil
+        reopenOnSelectedQuality()
     }
+
+    /// Caps what `"auto"` may pick to renditions at most `height` pixels tall, or
+    /// lifts the cap with `nil`. A manual ``setQuality(_:)`` pick is not capped:
+    /// it is the viewer's explicit choice.
+    public func setMaxQuality(height: Int?) {
+        maxQualityHeight = height
+        if let scalePlayback, routeIndex < routes.count {
+            applyLimits(to: scalePlayback, route: routes[routeIndex])
+        }
+    }
+
+    // "auto" or a rung id. Kept across failover and reopening, so a pick survives
+    // a route that dies and comes back.
+    private var selectedQuality = "auto"
+    private var maxQualityHeight: Int?
+    // What was last announced, so a repeat access-log entry is not a second event.
+    private var reportedQuality: String?
 
     private weak var client: MebiusClient?
     private let gateway: URL
@@ -182,7 +204,7 @@ public final class MebiusPlayer {
             // straight to the next route is the right answer there, because fetching it
             // would send the viewer's token to a host Mebius did not choose.
             let url: URL?
-            if let path = route.deliveryPath {
+            if let path = scalePath(for: route, quality: selectedQuality) {
                 url = endpoints.deliveryURL(path: path, token: client.currentToken)
             } else {
                 url = endpoints.originPlaylistURL(streamId: streamId, token: client.currentToken)
@@ -194,6 +216,7 @@ public final class MebiusPlayer {
             let playback = ScalePlayback(url: url, token: client.currentToken)
             playback.delegate = self
             self.scalePlayback = playback
+            applyLimits(to: playback, route: route)
             playback.start(in: view)
             playback.setVolume(volume)
         }
@@ -202,6 +225,44 @@ public final class MebiusPlayer {
     }
 
     #endif
+
+    /// Moves the playing route onto the selected rung (or back to its master for
+    /// `"auto"`) by swapping the AVPlayer item, which keeps volume and mute.
+    private func reopenOnSelectedQuality() {
+        guard
+            let client,
+            let scalePlayback,
+            routeIndex < routes.count,
+            !routes[routeIndex].renditions.isEmpty,
+            let path = scalePath(for: routes[routeIndex], quality: selectedQuality),
+            let url = client.gatewayEndpoints.deliveryURL(path: path, token: client.currentToken)
+        else { return }
+        applyLimits(to: scalePlayback, route: routes[routeIndex])
+        scalePlayback.reopen(url: url)
+        if selectedQuality != "auto" { reportQuality(selectedQuality, auto: false) }
+    }
+
+    /// Variant limits for the master playlist. Only `"auto"` on a laddered route
+    /// has variants to limit; anything else plays with none, as it always has.
+    private func applyLimits(to playback: ScalePlayback, route: PlaybackRoute) {
+        guard !route.renditions.isEmpty else { return }
+        let onMaster = !route.renditions.contains(where: { $0.id == selectedQuality })
+        guard onMaster, let height = maxQualityHeight, height > 0 else {
+            playback.setLimits(peakBitRate: 0, maxResolution: .zero)
+            return
+        }
+        playback.setLimits(
+            peakBitRate: peakBitRate(route.renditions, maxHeight: height),
+            maxResolution: CGSize(width: height * 16 / 9, height: height)
+        )
+    }
+
+    private func reportQuality(_ id: String, auto: Bool) {
+        guard id != reportedQuality else { return }
+        reportedQuality = id
+        delegate?.mebiusPlayer(self, didChangeQuality: id, auto: auto)
+        onQualityChanged?(id, auto)
+    }
 
     /// Gives the current route ``mebiusFirstFrameTimeout`` to report playback.
     ///
@@ -267,14 +328,18 @@ public final class MebiusPlayer {
         recovery.reset()
         isPlaying = true
         // Routes may differ in what they can offer, so the list is published per
-        // accepted route rather than once per player.
-        //
-        // No Mebius route exposes a ladder — the engine publishes a single rendition
-        // (`hlsVariant: lowLatency`, no ABR). Empty is the truthful answer, and this
-        // is the one place that has to change if that stops being true.
-        qualities = []
+        // accepted route rather than once per player. Only a `wide` route the gateway
+        // sent a ladder with has one; every other route answers empty, as before.
+        let route = routes[routeIndex]
+        qualities = route.renditions.map {
+            MebiusQuality(id: $0.id, label: $0.id, height: $0.height, bitrateKbps: $0.bitrateKbps)
+        }
         delegate?.mebiusPlayer(self, didChangeQualities: qualities)
         onQualitiesChanged?(qualities)
+        reportedQuality = nil
+        if route.renditions.contains(where: { $0.id == selectedQuality }) {
+            reportQuality(selectedQuality, auto: false)
+        }
         delegate?.mebiusPlayerDidStartPlaying(self)
         onPlaying?()
     }
@@ -514,5 +579,15 @@ extension MebiusPlayer: ScalePlaybackDelegate {
         // which is the one thing the route list exists to do.
         guard playback === scalePlayback else { return }
         handleFailure(error)
+    }
+
+    func scalePlayback(_ playback: ScalePlayback, didSwitchToHeight height: Double, bitrate: Double) {
+        guard
+            playback === scalePlayback,
+            routeIndex < routes.count,
+            !routes[routeIndex].renditions.contains(where: { $0.id == selectedQuality }),
+            let id = closestRendition(routes[routeIndex].renditions, height: height, bitrate: bitrate)
+        else { return }
+        reportQuality(id, auto: true)
     }
 }
