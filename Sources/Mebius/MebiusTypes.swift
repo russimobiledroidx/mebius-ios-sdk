@@ -62,10 +62,10 @@ public struct MebiusPlayerStats: Equatable, Sendable {
 
 /// One selectable rendition of a stream.
 ///
-/// Mebius does not transcode into a ladder today, so a live stream has exactly
-/// one rendition and ``MebiusPlayer/qualities`` is empty. That emptiness is the
-/// signal, not an omission: a player UI can hide its quality menu because the
-/// list says there is nothing to choose, rather than because someone guessed.
+/// Only a stream the gateway serves with a quality ladder has more than one; for
+/// any other, ``MebiusPlayer/qualities`` is empty. That emptiness is the signal,
+/// not an omission: a player UI can hide its quality menu because the list says
+/// there is nothing to choose, rather than because someone guessed.
 public struct MebiusQuality: Equatable, Sendable, Identifiable {
     /// Stable id to pass to ``MebiusPlayer/setQuality(_:)``.
     public let id: String
