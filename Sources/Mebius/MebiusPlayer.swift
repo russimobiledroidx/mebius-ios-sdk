@@ -105,7 +105,9 @@ public final class MebiusPlayer {
         assert(Thread.isMainThread, "Mebius must be used on the main thread")
         let before = allowedQualities
         allowedQualities = ids
-        guard routeIndex < routes.count else { return }
+        // Stopped: nothing is open, so the setting is simply kept for the next
+        // play; resolving a pin against the previous stream's routes would drop it.
+        guard scalePlayback != nil || routeAccepted, routeIndex < routes.count else { return }
         let route = routes[routeIndex]
         guard allowedRenditions(route.renditions, allowed: ids)
                 != allowedRenditions(route.renditions, allowed: before) else { return }
