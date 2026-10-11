@@ -67,8 +67,10 @@ public final class MebiusPlayer {
     /// - Throws: ``MebiusError/streamNotFound`` if `id` is neither — a UI that asks
     ///   for a rendition and gets no error would otherwise show the wrong state
     ///   forever. Throwing does not touch playback: the stream keeps running on
-    ///   whatever it is running on.
+    ///   whatever it is running on. An id excluded by ``setAllowedQualities(_:)``
+    ///   is not in ``qualities`` and throws the same way.
     public func setQuality(_ id: String) throws {
+        assert(Thread.isMainThread, "Mebius must be used on the main thread")
         guard id == "auto" || qualities.contains(where: { $0.id == id }) else {
             throw MebiusError.streamNotFound
         }
@@ -81,18 +83,45 @@ public final class MebiusPlayer {
 
     /// Caps what `"auto"` may pick to renditions at most `height` pixels tall, or
     /// lifts the cap with `nil`. A manual ``setQuality(_:)`` pick is not capped:
-    /// it is the viewer's explicit choice.
+    /// it is the viewer's explicit choice. (The Android SDK spells "no cap" `0`;
+    /// `0` is accepted here too.)
     public func setMaxQuality(height: Int?) {
+        assert(Thread.isMainThread, "Mebius must be used on the main thread")
         maxQualityHeight = height
         if let scalePlayback, routeIndex < routes.count {
             applyLimits(to: scalePlayback, route: routes[routeIndex])
         }
     }
 
-    // "auto" or a rung id. Kept across failover and reopening, so a pick survives
-    // a route that dies and comes back.
+    /// Restricts the ladder to these rung ids, or lifts the restriction with `nil`
+    /// or `[]`. Ids not on the ladder are ignored, and a list naming none of its
+    /// rungs means every rung.
+    ///
+    /// ``qualities`` then lists only the allowed rungs, and `"auto"` adapts only
+    /// between them — `["1080p", "720p"]` moves between 720p and 1080p and never
+    /// lower. A pinned rung that is no longer allowed falls back to `"auto"`. The
+    /// restriction survives failover and recovery.
+    public func setAllowedQualities(_ ids: [String]?) {
+        assert(Thread.isMainThread, "Mebius must be used on the main thread")
+        allowedQualities = ids
+        guard routeAccepted, routeIndex < routes.count else { return }
+        let before = qualities
+        publishQualities(for: routes[routeIndex])
+        guard qualities != before else { return }
+        selectedQuality = resolvedQuality(selectedQuality, on: routes[routeIndex], allowed: allowedQualities)
+        // On the master the variants changed with the filter, so it is reopened
+        // with the new `q`; a pin that is still allowed keeps playing untouched.
+        if selectedQuality == "auto" {
+            reportedQuality = nil
+            reopenOnSelectedQuality()
+        }
+    }
+
+    // "auto" or a rung id. Kept across reopening, and across failover to a route
+    // that offers the same id.
     private var selectedQuality = "auto"
     private var maxQualityHeight: Int?
+    private var allowedQualities: [String]?
     // What was last announced, so a repeat access-log entry is not a second event.
     private var reportedQuality: String?
 
@@ -204,8 +233,8 @@ public final class MebiusPlayer {
             // straight to the next route is the right answer there, because fetching it
             // would send the viewer's token to a host Mebius did not choose.
             let url: URL?
-            if let path = scalePath(for: route, quality: selectedQuality) {
-                url = endpoints.deliveryURL(path: path, token: client.currentToken)
+            if route.deliveryPath != nil {
+                url = deliveryURL(for: route, client: client)
             } else {
                 url = endpoints.originPlaylistURL(streamId: streamId, token: client.currentToken)
             }
@@ -234,12 +263,22 @@ public final class MebiusPlayer {
             let scalePlayback,
             routeIndex < routes.count,
             !routes[routeIndex].renditions.isEmpty,
-            let path = scalePath(for: routes[routeIndex], quality: selectedQuality),
-            let url = client.gatewayEndpoints.deliveryURL(path: path, token: client.currentToken)
+            let url = deliveryURL(for: routes[routeIndex], client: client)
         else { return }
         applyLimits(to: scalePlayback, route: routes[routeIndex])
         scalePlayback.reopen(url: url)
         if selectedQuality != "auto" { reportQuality(selectedQuality, auto: false) }
+    }
+
+    /// The URL for a gateway-offered route as the quality settings now stand: the
+    /// pinned rung, or the route itself with the allow-list's `q` filter.
+    private func deliveryURL(for route: PlaybackRoute, client: MebiusClient) -> URL? {
+        guard let path = scalePath(for: route, quality: selectedQuality) else { return nil }
+        return client.gatewayEndpoints.deliveryURL(
+            path: path,
+            token: client.currentToken,
+            query: masterFilter(for: route, quality: selectedQuality, allowed: allowedQualities)
+        )
     }
 
     /// Variant limits for the master playlist. Only `"auto"` on a laddered route
@@ -252,9 +291,35 @@ public final class MebiusPlayer {
             return
         }
         playback.setLimits(
-            peakBitRate: peakBitRate(route.renditions, maxHeight: height),
-            maxResolution: CGSize(width: height * 16 / 9, height: height)
+            peakBitRate: peakBitRate(allowedRenditions(route.renditions, allowed: allowedQualities), maxHeight: height),
+            maxResolution: CGSize(width: ladderWidth(height: height), height: height)
         )
+    }
+
+    /// Sets ``qualities`` to `route`'s allowed rungs and announces the list.
+    private func publishQualities(for route: PlaybackRoute) {
+        qualities = allowedRenditions(route.renditions, allowed: allowedQualities).map {
+            MebiusQuality(id: $0.id, label: $0.id, height: $0.height, bitrateKbps: $0.bitrateKbps)
+        }
+        delegate?.mebiusPlayer(self, didChangeQualities: qualities)
+        onQualitiesChanged?(qualities)
+    }
+
+    /// A pinned rung that fails is dropped for the master instead of being failed
+    /// over: the rung may simply not exist (the vendor makes no rung taller than
+    /// the source), and every recovery would otherwise reopen the same dead rung
+    /// until the budget ran out. Returns whether it took the failure.
+    private func unpinFailedRung() -> Bool {
+        guard
+            scalePlayback != nil,
+            routeIndex < routes.count,
+            routes[routeIndex].renditions.contains(where: { $0.id == selectedQuality })
+        else { return false }
+        selectedQuality = "auto"
+        // The master's first access-log entry then reports (id, auto: true).
+        reportedQuality = nil
+        reopenOnSelectedQuality()
+        return true
     }
 
     private func reportQuality(_ id: String, auto: Bool) {
@@ -331,15 +396,13 @@ public final class MebiusPlayer {
         // accepted route rather than once per player. Only a `wide` route the gateway
         // sent a ladder with has one; every other route answers empty, as before.
         let route = routes[routeIndex]
-        qualities = route.renditions.map {
-            MebiusQuality(id: $0.id, label: $0.id, height: $0.height, bitrateKbps: $0.bitrateKbps)
-        }
-        delegate?.mebiusPlayer(self, didChangeQualities: qualities)
-        onQualitiesChanged?(qualities)
+        publishQualities(for: route)
         reportedQuality = nil
-        if route.renditions.contains(where: { $0.id == selectedQuality }) {
-            reportQuality(selectedQuality, auto: false)
-        }
+        // A pin survives failover only onto a route that offers it; anywhere else
+        // the route is already playing its master (scalePath fell back), so the
+        // selection is made to say so.
+        selectedQuality = resolvedQuality(selectedQuality, on: route, allowed: allowedQualities)
+        if selectedQuality != "auto" { reportQuality(selectedQuality, auto: false) }
         delegate?.mebiusPlayerDidStartPlaying(self)
         onPlaying?()
     }
@@ -347,6 +410,7 @@ public final class MebiusPlayer {
     /// Routes a failure: try to get the stream back once video has arrived,
     /// otherwise skip to the next route.
     private func handleFailure(_ error: MebiusError) {
+        if unpinFailedRung() { return }
         if routeAccepted {
             loseRoute(error)
         } else {
@@ -586,7 +650,11 @@ extension MebiusPlayer: ScalePlaybackDelegate {
             playback === scalePlayback,
             routeIndex < routes.count,
             !routes[routeIndex].renditions.contains(where: { $0.id == selectedQuality }),
-            let id = closestRendition(routes[routeIndex].renditions, height: height, bitrate: bitrate)
+            let id = closestRendition(
+                allowedRenditions(routes[routeIndex].renditions, allowed: allowedQualities),
+                height: height,
+                bitrate: bitrate
+            )
         else { return }
         reportQuality(id, auto: true)
     }

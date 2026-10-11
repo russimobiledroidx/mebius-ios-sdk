@@ -48,13 +48,16 @@ struct GatewayEndpoints {
     // The caller must have checked `MebiusDelivery.isResolvable` first. Returns nil
     // rather than trusting a path it cannot resolve safely: an absolute path here
     // would send the viewer's access token to a host Mebius did not choose.
-    func deliveryURL(path: String, token: String) -> URL? {
+    //
+    // `query` is appended after the token, for parameters the gateway reads on the
+    // route itself (the master playlist's `q` rung filter).
+    func deliveryURL(path: String, token: String, query: [URLQueryItem] = []) -> URL? {
         guard path.hasPrefix("/"), !path.hasPrefix("//"), !path.contains("://") else { return nil }
         guard var components = URLComponents(url: gateway, resolvingAgainstBaseURL: false) else {
             return nil
         }
         components.path = components.path.replacingOccurrences(of: "/+$", with: "", options: .regularExpression) + path
-        components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "token", value: token)]
+        components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "token", value: token)] + query
         return components.url
     }
 

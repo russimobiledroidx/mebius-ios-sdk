@@ -49,7 +49,7 @@ broadcasts, or plays with sub-second latency, install via CocoaPods.**
 ### CocoaPods (full functionality)
 
 ```ruby
-pod 'Mebius', '~> 0.2.3'
+pod 'Mebius', '~> 0.5.0'
 ```
 
 ```sh
@@ -63,13 +63,13 @@ pod install
    ```
    https://github.com/russimobiledroidx/mebius-ios-sdk
    ```
-3. Set the dependency rule to **Up to Next Major Version** starting at `0.2.3`.
+3. Set the dependency rule to **Up to Next Major Version** starting at `0.5.0`.
 4. Add the **`Mebius`** library product to your app target.
 
 ### Swift Package Manager — via `Package.swift`
 
 ```swift
-.package(url: "https://github.com/russimobiledroidx/mebius-ios-sdk", from: "0.2.3")
+.package(url: "https://github.com/russimobiledroidx/mebius-ios-sdk", from: "0.5.0")
 ```
 
 …and add `"Mebius"` to the dependencies of the target that uses it:
@@ -191,13 +191,23 @@ player.onQualityChanged = { id, auto in label.text = auto ? "Auto (\(id))" : id 
 
 try player.setQuality("720p")          // pin a rendition
 try player.setQuality("auto")          // back to adaptive (the default)
-player.setMaxQuality(height: 720)      // cap what auto may pick; nil lifts it
+player.setMaxQuality(height: 720)      // cap what auto may pick; nil (or 0) lifts it
+player.setAllowedQualities(["1080p", "720p"])  // auto adapts 720p<->1080p, never lower; nil = all
 ```
 
 A pin reopens the stream on that rendition alone (AVPlayer cannot pin a variant
-of a master playlist reliably); volume and mute carry over. The cap applies to
-`"auto"` only — a pin is the viewer's explicit choice. The rendition auto is
-playing is reported from AVPlayer's access log, mapped to the nearest id.
+of a master playlist reliably); volume and mute carry over. A pinned rendition
+that fails to load falls back to `"auto"`, and a pin survives failover only onto
+a route that offers the same id. The cap applies to `"auto"` only — a pin is the
+viewer's explicit choice. The rendition auto is playing is reported from
+AVPlayer's access log, mapped to the nearest id.
+
+`setAllowedQualities(_:)` narrows the ladder: `qualities` lists only the allowed
+rungs (in ladder order), `setQuality` refuses the others like an unknown id, a
+pin that is no longer allowed falls back to `"auto"`, and auto adapts only
+between them (the gateway drops the other variants from the master playlist).
+Ids not on the ladder are ignored; `nil`, `[]` or a list naming no rung means
+all rungs. It survives failover and recovery.
 
 Server side: stream-engine `docs/INTEGRATION.md` §3.1 "Official encoder profile"
 (what the publisher must send for a ladder to exist) and §5.9 "Quality renditions"
@@ -288,7 +298,8 @@ Full UIKit examples are in [`Examples/UIKitExample`](Examples/UIKitExample).
 | `MebiusClient` | updateToken | `func updateToken(_ token: String) throws` |
 | `MebiusPlayer` | qualities | `var qualities: [MebiusQuality]` (`id`, `height`, `bitrateKbps`) — empty means one rendition; hide the quality menu |
 | `MebiusPlayer` | setQuality | `func setQuality(_ id: String) throws` — `"auto"` or an id from `qualities` |
-| `MebiusPlayer` | setMaxQuality | `func setMaxQuality(height: Int?)` — caps `"auto"`; `nil` lifts the cap |
+| `MebiusPlayer` | setMaxQuality | `func setMaxQuality(height: Int?)` — caps `"auto"`; `nil` or `0` lifts the cap |
+| `MebiusPlayer` | setAllowedQualities | `func setAllowedQualities(_ ids: [String]?)` — restricts `qualities` and auto to these rungs; `nil` = all |
 | `MebiusPlayer` | quality events | `onQualitiesChanged: ([MebiusQuality]) -> Void`, `onQualityChanged: (_ id: String, _ auto: Bool) -> Void` |
 | `MebiusClient` | disconnect | `func disconnect()` |
 | `MebiusClient` | events | `onConnected`, `onDisconnected`, `onError` closures + `delegate` |

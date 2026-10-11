@@ -384,4 +384,61 @@ final class QualityLadderTests: XCTestCase {
         XCTAssertEqual(closestRendition(ladder, height: 0, bitrate: 900_000), "480p")
         XCTAssertNil(closestRendition(ladder, height: 0, bitrate: -1))
     }
+
+    // MARK: Audit round
+
+    func testCapWidthMatchesWhatTheGatewayAdvertises() {
+        // 480 * 16 / 9 = 853 in integer maths, which excludes the 854x480 variant.
+        XCTAssertEqual(ladderWidth(height: 480), 854)
+        XCTAssertEqual(ladderWidth(height: 720), 1280)
+        XCTAssertEqual(ladderWidth(height: 1080), 1920)
+        XCTAssertEqual(ladderWidth(height: 360), 640)
+        XCTAssertEqual(ladderWidth(height: 540), 960)
+        XCTAssertEqual(ladderWidth(height: 1) % 2, 0, "rounded up to even")
+    }
+
+    func testAllowListKeepsLadderOrderAndIgnoresWhatIsNotOnIt() {
+        XCTAssertEqual(allowedRenditions(ladder, allowed: nil), ladder)
+        XCTAssertEqual(allowedRenditions(ladder, allowed: []), ladder)
+        XCTAssertEqual(allowedRenditions(ladder, allowed: ["720p", "1080p", "4k"]).map(\.id), ["1080p", "720p"])
+        XCTAssertEqual(allowedRenditions(ladder, allowed: ["4k"]), ladder, "naming no rung means every rung")
+    }
+
+    func testMasterFilterOnlyWhenTheAllowListNarrowsAuto() {
+        let route = PlaybackRoute(isRealtime: false, deliveryPath: "/d/wide/s1", renditions: ladder)
+        let endpoints = GatewayEndpoints(gateway: URL(string: "https://gateway.mebius.io")!)
+
+        let filtered = endpoints.deliveryURL(
+            path: scalePath(for: route, quality: "auto")!, token: "tok",
+            query: masterFilter(for: route, quality: "auto", allowed: ["720p", "1080p"])
+        )!
+        XCTAssertEqual(filtered.absoluteString, "https://gateway.mebius.io/d/wide/s1?token=tok&q=1080p,720p")
+
+        XCTAssertTrue(masterFilter(for: route, quality: "auto", allowed: nil).isEmpty)
+        XCTAssertTrue(masterFilter(for: route, quality: "auto", allowed: ["480p", "720p", "1080p"]).isEmpty)
+        XCTAssertTrue(masterFilter(for: route, quality: "720p", allowed: ["720p"]).isEmpty, "a pinned rung has no variants")
+        let plain = PlaybackRoute(isRealtime: false, deliveryPath: "/d/wide/s1")
+        XCTAssertTrue(masterFilter(for: plain, quality: "auto", allowed: ["720p"]).isEmpty, "no ladder, no change")
+    }
+
+    func testPinSurvivesFailoverOnlyOntoARouteThatOffersIt() {
+        let laddered = PlaybackRoute(isRealtime: false, deliveryPath: "/d/wide/s1", renditions: ladder)
+        let plain = PlaybackRoute(isRealtime: false, deliveryPath: "/live/s1/index.m3u8")
+        XCTAssertEqual(resolvedQuality("720p", on: laddered, allowed: nil), "720p")
+        XCTAssertEqual(resolvedQuality("720p", on: plain, allowed: nil), "auto")
+        XCTAssertEqual(resolvedQuality("480p", on: laddered, allowed: ["1080p", "720p"]), "auto", "no longer allowed")
+        XCTAssertEqual(resolvedQuality("auto", on: laddered, allowed: nil), "auto")
+    }
+
+    func testAllowListWithoutALadderChangesNothing() {
+        let player = Mebius(appId: "a", gateway: URL(string: "https://gateway.mebius.io")!)
+            .connect(token: "t").createPlayer()
+        var announced = 0
+        player.onQualitiesChanged = { _ in announced += 1 }
+        player.setAllowedQualities(["1080p", "720p"])
+        player.setMaxQuality(height: 0)
+        XCTAssertTrue(player.qualities.isEmpty)
+        XCTAssertEqual(announced, 0)
+        XCTAssertThrowsError(try player.setQuality("720p"))
+    }
 }

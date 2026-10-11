@@ -5,8 +5,13 @@
 - Quality selection for streams served with a quality ladder. A `wide` delivery
   may now carry `renditions` (1080p / 720p / 480p); the player lists them in
   `qualities`, pins one with `setQuality(_:)`, caps adaptive playback with
-  `setMaxQuality(height:)`, and reports the rendition playing through
+  `setMaxQuality(height:)` (`nil` or `0` lifts it), restricts the ladder with
+  `setAllowedQualities(_:)`, and reports the rendition playing through
   `onQualityChanged` / `mebiusPlayer(_:didChangeQuality:auto:)`.
+
+  A pinned rendition that fails to load falls back to auto on the master
+  instead of failing the route; a pin survives failover only onto a route that
+  offers it. A manual pick is not limited by the max cap.
 
   A delivery without `renditions` behaves exactly as before: `qualities` stays
   empty, no variant limits are set and no quality event fires. Integrators

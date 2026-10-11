@@ -79,6 +79,41 @@ func scalePath(for route: PlaybackRoute, quality: String) -> String? {
     route.renditions.first(where: { $0.id == quality })?.path ?? route.deliveryPath
 }
 
+/// The rungs of `renditions` an app allowed, in ladder order. `nil`, empty, or a
+/// list that names no rung on this ladder all mean every rung: an allow-list that
+/// would leave nothing to play is a mistake to ignore, not a stream to break.
+func allowedRenditions(_ renditions: [MebiusRendition], allowed: [String]?) -> [MebiusRendition] {
+    guard let allowed, !allowed.isEmpty else { return renditions }
+    let kept = renditions.filter { allowed.contains($0.id) }
+    return kept.isEmpty ? renditions : kept
+}
+
+/// What `selected` means on `route`: the same pin when the route offers that rung
+/// and it is allowed, `"auto"` otherwise. Applied on every route change, so a pin
+/// survives failover only onto a route that can honour it (as on Android).
+func resolvedQuality(_ selected: String, on route: PlaybackRoute, allowed: [String]?) -> String {
+    allowedRenditions(route.renditions, allowed: allowed).contains(where: { $0.id == selected }) ? selected : "auto"
+}
+
+/// The `q` filter for the master playlist: the allowed rung ids, so the gateway
+/// drops the other variants and AVPlayer adapts only within what is left. Empty
+/// for a pinned rung, a route with no ladder, or nothing filtered — which keeps
+/// the URL exactly as it was without an allow-list.
+func masterFilter(for route: PlaybackRoute, quality: String, allowed: [String]?) -> [URLQueryItem] {
+    guard !route.renditions.contains(where: { $0.id == quality }) else { return [] }
+    let kept = allowedRenditions(route.renditions, allowed: allowed)
+    guard kept.count < route.renditions.count else { return [] }
+    return [URLQueryItem(name: "q", value: kept.map(\.id).joined(separator: ","))]
+}
+
+/// The 16:9 frame width for `height`, rounded as the engine rounds it — nearest
+/// pixel, then up to even — so a cap matches the variant the gateway advertises
+/// (480 gives 854, which plain integer division would make 853 and so exclude).
+func ladderWidth(height: Int) -> Int {
+    let width = (height * 16 + 8) / 9
+    return width + width % 2
+}
+
 /// The rung a `maxHeight` cap leaves on top: the tallest that fits, or the shortest
 /// when none does — a cap below the ladder still has to play something.
 func cappedRendition(_ renditions: [MebiusRendition], maxHeight: Int?) -> MebiusRendition? {
