@@ -49,7 +49,7 @@ broadcasts, or plays with sub-second latency, install via CocoaPods.**
 ### CocoaPods (full functionality)
 
 ```ruby
-pod 'Mebius', '~> 0.5.0'
+pod 'Mebius', '~> 0.5.1'
 ```
 
 ```sh
@@ -63,13 +63,13 @@ pod install
    ```
    https://github.com/russimobiledroidx/mebius-ios-sdk
    ```
-3. Set the dependency rule to **Up to Next Major Version** starting at `0.5.0`.
+3. Set the dependency rule to **Up to Next Major Version** starting at `0.5.1`.
 4. Add the **`Mebius`** library product to your app target.
 
 ### Swift Package Manager — via `Package.swift`
 
 ```swift
-.package(url: "https://github.com/russimobiledroidx/mebius-ios-sdk", from: "0.5.0")
+.package(url: "https://github.com/russimobiledroidx/mebius-ios-sdk", from: "0.5.1")
 ```
 
 …and add `"Mebius"` to the dependencies of the target that uses it:
