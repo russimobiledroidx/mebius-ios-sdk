@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- `MebiusBroadcaster.setMicEnabled(false)` no longer stalls web viewers. It used
+  to disable the audio track, and libwebrtc stops the recorder once every send
+  stream is muted, so the broadcast carried no audio at all: the CDN relay wrote
+  a video-only FLV under an audio header and browser players (MSE buffers
+  audio ∩ video) sat on a spinner until the host unmuted. The track now stays
+  live and the captured samples are zeroed in the audio processing module, so
+  silence keeps flowing. `stop()` releases the mute.
+
 ## 0.5.0
 
 - Quality selection for streams served with a quality ladder. A `wide` delivery

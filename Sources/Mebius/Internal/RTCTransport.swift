@@ -50,8 +50,53 @@ private enum RTCFactory {
             encoder.preferredCodec = h264
         }
         let decoder = RTCDefaultVideoDecoderFactory()
-        return RTCPeerConnectionFactory(encoderFactory: encoder, decoderFactory: decoder)
+        // Same ADM, voice processing and default APM as the plain initializer;
+        // the only addition is the capture hook the mic mute zeroes audio in.
+        let apm = RTCDefaultAudioProcessingModule(
+            config: nil,
+            capturePostProcessingDelegate: captureMuter,
+            renderPreProcessingDelegate: nil
+        )
+        return RTCPeerConnectionFactory(
+            audioDeviceModuleType: .platformDefault,
+            bypassVoiceProcessing: false,
+            encoderFactory: encoder,
+            decoderFactory: decoder,
+            audioProcessingModule: apm
+        )
     }()
+
+    /// Held strongly: the APM keeps its delegate weak.
+    static let captureMuter = CaptureMuter()
+}
+
+/// Mic mute that keeps audio flowing.
+///
+/// Disabling the audio track makes libwebrtc stop the recorder once every
+/// send stream is muted (`AudioState::OnMuteStreamChanged` → `StopRecording`),
+/// so the publish carries no audio packets at all. The CDN relay then writes a
+/// video-only FLV under an audio header and web viewers' MSE buffers
+/// (audio ∩ video) stall until unmute. Zeroing the captured samples instead
+/// keeps the track live and sends silence.
+final class CaptureMuter: NSObject, RTCAudioCustomProcessingDelegate {
+    private let lock = NSLock()
+    private var isMuted = false
+
+    var muted: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return isMuted }
+        set { lock.lock(); isMuted = newValue; lock.unlock() }
+    }
+
+    func audioProcessingInitialize(sampleRate sampleRateHz: Int, channels: Int) {}
+
+    func audioProcessingProcess(audioBuffer: RTCAudioBuffer) {
+        guard muted else { return }
+        for channel in 0..<audioBuffer.channels {
+            audioBuffer.rawBuffer(forChannel: channel).update(repeating: 0, count: audioBuffer.frames)
+        }
+    }
+
+    func audioProcessingRelease() {}
 }
 
 // MARK: WHIP/WHEP signaling
@@ -265,6 +310,8 @@ final class RTCPublishTransport: NSObject, PublishTransport, RTCPeerConnectionDe
     }
 
     func stop() {
+        // The mute lives on the shared factory: release it for whatever comes next.
+        RTCFactory.captureMuter.muted = false
         capturer?.stopCapture()
         capturer = nil
         statsTimer?.invalidate()
@@ -292,7 +339,8 @@ final class RTCPublishTransport: NSObject, PublishTransport, RTCPeerConnectionDe
         }
     }
 
-    func setMicEnabled(_ enabled: Bool) { audioTrack?.isEnabled = enabled }
+    /// Never `audioTrack.isEnabled = false`: see `CaptureMuter`.
+    func setMicEnabled(_ enabled: Bool) { RTCFactory.captureMuter.muted = !enabled }
     func setCameraEnabled(_ enabled: Bool) { videoTrack?.isEnabled = enabled }
 
     #if canImport(UIKit)
